@@ -36,6 +36,7 @@ import type {
   ToggleSkillResponse,
   DeleteSkillResponse,
   SetModelResponse,
+  SetVariantResponse,
   SetPermissionModeResponse,
   SetThinkingLevelResponse,
   ListFilesResponse,
@@ -148,6 +149,9 @@ type ChannelState = {
   cwd: string;
   sessionId: string;
 
+  modelSetting?: string;
+  variant?: string;
+
   running: boolean;
   sseAbort: AbortController;
 
@@ -208,6 +212,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
           message.channelId,
           message.resume ?? null,
           message.cwd ?? undefined,
+          message.model ?? undefined,
+          message.variant ?? undefined,
           message.initialMessage
         );
         return;
@@ -297,6 +303,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     channelId: string,
     resume: string | null,
     cwd: string | undefined,
+    model: string | undefined,
+    variant: string | undefined,
     initialMessage: any | undefined
   ): Promise<void> {
     const workspaceCwd =
@@ -318,6 +326,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       channelId,
       cwd: resolvedCwd,
       sessionId,
+      modelSetting: typeof model === 'string' ? model.trim() || undefined : undefined,
+      variant: typeof variant === 'string' ? variant.trim() || undefined : undefined,
       running: false,
       sseAbort: new AbortController(),
       assistantMessageIds: new Set<string>(),
@@ -439,8 +449,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
       // 其他命令通过 command API 发送
       const modelSetting = (
-        this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? ''
+        state.modelSetting ??
+        (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
       ).trim();
+      const variant = String(state.variant ?? '').trim();
       const selectedAgent = (
         this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
       ).trim();
@@ -449,6 +461,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       const body: any = { command, arguments: args };
       if (model) body.model = model;
       if (selectedAgent) body.agent = selectedAgent;
+      if (variant) body.variant = variant;
 
       state.running = true;
       this.sendToChannel(state.channelId, {
@@ -465,8 +478,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     const parts = [{ type: 'text', text }];
 
     const modelSetting = (
-      this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? ''
+      state.modelSetting ?? (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
     ).trim();
+    const variant = String(state.variant ?? '').trim();
     const selectedAgent = (
       this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
     ).trim();
@@ -479,6 +493,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     if (model) {
       body.model = model;
+    }
+
+    if (variant) {
+      body.variant = variant;
     }
 
     if (selectedAgent) {
@@ -1105,6 +1123,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     | ToggleSkillResponse
     | DeleteSkillResponse
     | SetModelResponse
+    | SetVariantResponse
     | SetPermissionModeResponse
     | SetThinkingLevelResponse
     | ListFilesResponse
@@ -1153,11 +1172,24 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         return this.handleListFiles(req.pattern);
 
       case 'set_model':
-        await this.configService.updateValue(
-          'opencodeGui.selectedModel',
-          String(req.model?.value ?? '')
-        );
+        if (typeof message.channelId === 'string') {
+          const state = this.channels.get(message.channelId);
+          if (state) {
+            state.modelSetting = String(req.model?.value ?? '').trim() || undefined;
+          }
+        }
+
+        await this.configService.updateValue('opencodeGui.selectedModel', String(req.model?.value ?? ''));
         return { type: 'set_model_response', success: true };
+
+      case 'set_variant':
+        if (typeof message.channelId === 'string') {
+          const state = this.channels.get(message.channelId);
+          if (state) {
+            state.variant = String(req.variant ?? '').trim() || undefined;
+          }
+        }
+        return { type: 'set_variant_response', success: true };
 
       case 'set_work_mode':
         return { type: 'set_work_mode_response', success: true };
