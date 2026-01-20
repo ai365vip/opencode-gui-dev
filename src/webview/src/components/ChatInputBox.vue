@@ -1,9 +1,6 @@
 <template>
   <!-- 输入框 - 三行布局结构 -->
   <div class="full-input-box" style="position: relative">
-    <!-- Diff Preview 待处理文件列表 -->
-    <PendingDiffsBar v-if="pendingDiffs && pendingDiffs.length > 0" :pending-files="pendingDiffs" />
-
     <!-- 附件列表（如果有附件） -->
     <div v-if="attachments && attachments.length > 0" class="attachments-list">
       <div v-for="attachment in attachments" :key="attachment.id" class="attachment-item">
@@ -163,7 +160,6 @@ import { ref, computed, nextTick, inject, onMounted, onUnmounted, watch } from '
 import FileIcon from './FileIcon.vue';
 import ButtonArea from './ButtonArea.vue';
 import QueuedMessage from './Messages/QueuedMessage.vue';
-import PendingDiffsBar from './PendingDiffsBar.vue';
 import type { AttachmentItem } from '../types/attachment';
 import { Dropdown, DropdownItem } from './Dropdown';
 import { RuntimeKey } from '../composables/runtimeContext';
@@ -171,15 +167,6 @@ import { useCompletionDropdown } from '../composables/useCompletionDropdown';
 import { getSlashCommands, commandToDropdownItem } from '../providers/slashCommandProvider';
 import { getFileReferences, fileToDropdownItem } from '../providers/fileReferenceProvider';
 import { useFileSearch } from '../composables/useFileSearch';
-
-interface PendingFile {
-  filePath: string;
-  fileName: string;
-  blockCount: number;
-  linesAdded: number;
-  linesDeleted: number;
-  firstBlockLine: number;
-}
 
 interface Props {
   showProgress?: boolean;
@@ -199,7 +186,6 @@ interface Props {
     attachments: any[];
     includeSelection: boolean;
   }>;
-  pendingDiffs?: PendingFile[];
 }
 
 interface Emits {
@@ -231,7 +217,6 @@ const props = withDefaults(defineProps<Props>(), {
   conversationWorking: false,
   attachments: () => [],
   messageQueue: () => [],
-  pendingDiffs: () => []
 });
 
 const emit = defineEmits<Emits>();

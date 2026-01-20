@@ -13,6 +13,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { ToolContext } from '@/types/tool';
+import { basename } from '@/utils/pathUtils';
 
 interface Props {
   filePath: string;
@@ -25,8 +26,7 @@ const props = defineProps<Props>();
 
 const fileName = computed(() => {
   if (!props.filePath) return '';
-  // 简单的路径解析（跨平台）
-  return props.filePath.split('/').pop() || props.filePath.split('\\').pop() || props.filePath;
+  return basename(props.filePath);
 });
 
 const fullPath = computed(() => {

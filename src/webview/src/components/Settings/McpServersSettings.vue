@@ -382,19 +382,27 @@ function parseJsoncObject(text: string): { obj: any; error: string } {
 function applyModify(text: string, jsonPath: Array<string | number>, value: any): string {
   const original = text ?? ''
   const trimmed = original.trim()
+  const format = { formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' } }
+
+  const apply = (source: string) => {
+    const edits = modify(source, jsonPath, value, format)
+    return applyEdits(source, edits)
+  }
   if (!trimmed) {
-    if (value === undefined) return original
+    if (value === undefined) return original || '{\n}\n'
     const base = typeof jsonPath[0] === 'number' ? '[\n]\n' : '{\n}\n'
-    const edits = modify(base, jsonPath, value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' }
-    })
-    return applyEdits(base, edits)
+    return apply(base)
   }
 
-  const edits = modify(original, jsonPath, value, {
-    formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' }
-  })
-  return applyEdits(original, edits)
+  try {
+    return apply(original)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (value === undefined && /delete in empty document/i.test(msg)) {
+      return original
+    }
+    throw err
+  }
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> | undefined {

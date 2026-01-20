@@ -865,8 +865,7 @@ export type ExtensionToWebViewMessage =
   | AddMultipleFilesMessage
   | InsertFileReferenceMessage
   | ModelChangeMessage
-  | CustomModelAddedMessage
-  | DiffPreviewPendingFilesMessage;
+  | CustomModelAddedMessage;
 
 /**
  * Extension 发送时的封装格式
@@ -1009,18 +1008,6 @@ export interface CustomModelAddedMessage extends BaseMessage {
 /**
  * Diff Preview 待处理文件状态更新（Extension → WebView）
  */
-export interface DiffPreviewPendingFilesMessage extends BaseMessage {
-  type: 'diff_preview_pending_files';
-  files: Array<{
-    filePath: string;
-    fileName: string;
-    blockCount: number;
-    linesAdded: number;
-    linesDeleted: number;
-    firstBlockLine: number; // 第一处修改的行号
-  }>;
-}
-
 /**
  * 工作模式变更（WebView → Extension）
  */

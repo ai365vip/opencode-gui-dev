@@ -62,7 +62,6 @@ export class VSCodeTransport extends BaseTransport {
             'add-multiple-files',
             'insert-file-reference',
             'custom-model-added',
-            'diff_preview_pending_files'  // Diff preview 待处理文件列表
         ];
 
         if (needRedispatch.includes(data.message.type)) {

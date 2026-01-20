@@ -115,7 +115,6 @@
           :available-variants="availableVariants"
           :selected-variant="currentVariant"
           :message-queue="session?.messageQueue.value ?? []"
-          :pending-diffs="pendingFiles"
           @submit="handleSubmit"
           @stop="handleStop"
           @add-attachment="handleAddAttachment"
@@ -145,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue';
+import { ref, computed, inject, onMounted, nextTick, watch } from 'vue';
 import { RuntimeKey } from '../composables/runtimeContext';
 import { useSession } from '../composables/useSession';
 import { useModelManagement } from '../composables/useModelManagement';
@@ -163,15 +162,6 @@ import PermissionRequestModal from '../components/PermissionRequestModal.vue';
 import ProgressDialog from '../components/ProgressDialog.vue';
 import { useKeybinding } from '../utils/useKeybinding';
 import { useSignal } from '@gn8/alien-signals-vue';
-
-interface PendingFile {
-  filePath: string;
-  fileName: string;
-  blockCount: number;
-  linesAdded: number;
-  linesDeleted: number;
-  firstBlockLine: number; // 第一处修改的行号
-}
 
 const runtime = (() => {
   const rt = inject(RuntimeKey);
@@ -424,9 +414,6 @@ const endEl = ref<HTMLDivElement | null>(null);
 // 附件状态管理
 const attachments = ref<AttachmentItem[]>([]);
 
-// Diff Preview 待确认文件列表
-const pendingFiles = ref<PendingFile[]>([]);
-
 // 记录上次消息数量，用于判断是否需要滚动
 let prevCount = 0;
 
@@ -472,24 +459,7 @@ onMounted(async () => {
   prevCount = messages.value.length;
   await nextTick();
   scrollToBottom();
-
-  // 监听 Diff Preview 待确认文件列表消息
-  window.addEventListener('message', handleDiffPreviewMessage);
 });
-
-onUnmounted(() => {
-  // 移除 Diff Preview 消息监听
-  window.removeEventListener('message', handleDiffPreviewMessage);
-});
-
-// 处理 Diff Preview 待确认文件列表消息
-function handleDiffPreviewMessage(event: MessageEvent) {
-  const message = event.data;
-
-  if (message.type === 'diff_preview_pending_files') {
-    pendingFiles.value = message.files || [];
-  }
-}
 
 async function createNew(): Promise<void> {
   if (!runtime) return;

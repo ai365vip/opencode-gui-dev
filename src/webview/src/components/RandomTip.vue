@@ -1,13 +1,13 @@
 <template>
   <div class="empty-state-content">
-    <ClawdIcon class="empty-mascot" />
+    <OpenCodeIcon class="empty-mascot" />
     <p class="empty-state-message">{{ currentTip }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import ClawdIcon from './ClawdIcon.vue';
+import OpenCodeIcon from './OpenCodeIcon.vue';
 
 interface Props {
   platform: string;

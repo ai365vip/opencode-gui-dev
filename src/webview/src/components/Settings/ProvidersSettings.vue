@@ -584,26 +584,31 @@ function parseJsoncObject(text: string): { obj: any; error: string } {
 function applyModify(text: string, jsonPath: Array<string | number>, value: any): string {
   const original = text ?? '';
   const trimmed = original.trim();
+  const format = { formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' } };
 
-  // 如果值为 undefined（删除操作）且文档为空或仅有空对象，直接返回
-  if (value === undefined) {
-    if (!trimmed || trimmed === '{}' || trimmed === '[]') {
-      return original || '{\n}\n';
-    }
-  }
+  const apply = (source: string) => {
+    const edits = modify(source, jsonPath, value, format);
+    return applyEdits(source, edits);
+  };
 
   if (!trimmed) {
+    // 空文档：删除操作直接返回一个最小对象；写入操作基于最小对象进行 modify
+    if (value === undefined) {
+      return original || '{\n}\n';
+    }
     const base = typeof jsonPath[0] === 'number' ? '[\n]\n' : '{\n}\n';
-    const edits = modify(base, jsonPath, value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' }
-    });
-    return applyEdits(base, edits);
+    return apply(base);
   }
 
-  const edits = modify(original, jsonPath, value, {
-    formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' }
-  });
-  return applyEdits(original, edits);
+  try {
+    return apply(original);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (value === undefined && /delete in empty document/i.test(msg)) {
+      return original || '{\n}\n';
+    }
+    throw err;
+  }
 }
 
 function asStringArray(value: unknown): string[] {

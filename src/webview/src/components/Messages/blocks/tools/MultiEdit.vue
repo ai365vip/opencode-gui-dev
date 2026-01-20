@@ -73,9 +73,9 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import path from 'path-browserify-esm';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
 import type { ToolContext } from '@/types/tool';
+import { basename } from '@/utils/pathUtils';
 import ToolError from './common/ToolError.vue';
 import ToolFilePath from './common/ToolFilePath.vue';
 import FileIcon from '@/components/FileIcon.vue';
@@ -100,7 +100,7 @@ const filePath = computed(() => {
 
 const fileName = computed(() => {
   if (!filePath.value) return '';
-  return path.basename(filePath.value);
+  return basename(filePath.value);
 });
 
 const replaceAll = computed(() => {

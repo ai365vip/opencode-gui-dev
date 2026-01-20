@@ -43,8 +43,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import path from 'path-browserify-esm';
 import type { ToolContext } from '@/types/tool';
+import { basename } from '@/utils/pathUtils';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
 import ToolFilePath from './common/ToolFilePath.vue';
 import ToolError from './common/ToolError.vue';
@@ -78,7 +78,7 @@ const filePath = computed(() => {
 
 const fileName = computed(() => {
   if (!filePath.value) return '';
-  return path.basename(filePath.value);
+  return basename(filePath.value);
 });
 
 const offset = computed(() => {

@@ -20,6 +20,10 @@ import type {
   GetClaudeStateResponse,
   GetClaudeConfigResponse,
   SaveClaudeConfigResponse,
+  GetOpencodeConfigFileResponse,
+  SaveOpencodeConfigFileResponse,
+  GetOpencodeAuthStatusResponse,
+  SetOpencodeAuthApiKeyResponse,
   GetCurrentSelectionResponse,
   GetMcpServersResponse,
   GetAssetUrisResponse,
@@ -486,7 +490,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   }
 
   private async handleSessionUndo(state: ChannelState): Promise<void> {
-    state.running = true;
+    // /undo 依赖 session 处于 idle（后端会 assertNotBusy）；忙碌时先 abort
+    state.running = false;
+    try {
+      await this.client.abort(state.sessionId, state.cwd);
+    } catch {}
+
     this.sendToChannel(state.channelId, {
       type: 'system',
       subtype: 'init',
@@ -578,7 +587,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   }
 
   private async handleSessionRedo(state: ChannelState): Promise<void> {
-    state.running = true;
+    // /redo 依赖 session 处于 idle（后端会 assertNotBusy）；忙碌时先 abort
+    state.running = false;
+    try {
+      await this.client.abort(state.sessionId, state.cwd);
+    } catch {}
+
     this.sendToChannel(state.channelId, {
       type: 'system',
       subtype: 'init',
@@ -1115,6 +1129,16 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         return this.handleGetClaudeConfig(req.scope, req.configType);
       case 'save_claude_config':
         return this.handleSaveClaudeConfig(req.config, req.scope, req.configType);
+
+      case 'get_opencode_config_file':
+        return this.handleGetOpencodeConfigFile(req.configType, req.scope);
+      case 'save_opencode_config_file':
+        return this.handleSaveOpencodeConfigFile(req.configType, req.content, req.scope);
+      case 'get_opencode_auth_status':
+        return this.handleGetOpencodeAuthStatus(req.providerId);
+      case 'set_opencode_auth_api_key':
+        return this.handleSetOpencodeAuthApiKey(req.providerId, req.apiKey);
+
       case 'get_current_selection':
         return this.handleGetCurrentSelection();
       case 'get_mcp_servers':
@@ -1228,7 +1252,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private async handleGetClaudeState(): Promise<GetClaudeStateResponse> {
     // WebView 侧需要一个 config 对象来初始化模型/Slash Commands。
-    // OpenCode 版本先返回最小结构，后续再用 /provider /config/providers 等补齐。
+    // OpenCode 不提供单独的 `/model`；模型来自 `/config/providers` / `/provider` 返回的 Provider.models。
     const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
 
     try {
@@ -1273,13 +1297,43 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   ): Array<{ value: string; displayName?: string; description?: string }> {
     const out: Array<{ value: string; displayName?: string; description?: string }> = [];
 
+    const isPlainObject = (value: unknown): value is Record<string, any> =>
+      !!value && typeof value === 'object' && !Array.isArray(value);
+
     for (const p of providers ?? []) {
-      const providerID = String(p?.id ?? p?.providerID ?? p?.name ?? '').trim();
+      const providerID = String(p?.id ?? p?.providerID ?? p?.providerId ?? p?.name ?? '').trim();
       if (!providerID) continue;
 
       const providerName = String(p?.name ?? providerID);
       const providerDesc = typeof p?.description === 'string' ? p.description : undefined;
 
+      // OpenCode API: Provider.models 是一个 map（modelId -> Model）
+      const modelsMap = isPlainObject(p?.models) ? (p.models as Record<string, any>) : undefined;
+      if (modelsMap) {
+        for (const [modelKey, model] of Object.entries(modelsMap)) {
+          const modelID = String(model?.id ?? model?.modelID ?? model?.name ?? modelKey ?? '').trim();
+          if (!modelID) continue;
+
+          const value = `${providerID}/${modelID}`;
+          const name = typeof model?.name === 'string' ? model.name : '';
+          const ctx = Number(model?.limit?.context);
+          const outLimit = Number(model?.limit?.output);
+
+          const descParts: string[] = [];
+          if (name && name !== modelID) descParts.push(name);
+          if (Number.isFinite(ctx) && ctx > 0) descParts.push(`ctx ${ctx}`);
+          if (Number.isFinite(outLimit) && outLimit > 0) descParts.push(`out ${outLimit}`);
+
+          out.push({
+            value,
+            displayName: value,
+            description: descParts.length > 0 ? descParts.join(' · ') : providerDesc
+          });
+        }
+        continue;
+      }
+
+      // Back-compat: older shapes (array of strings / objects)
       const modelsRaw = Array.isArray(p?.models)
         ? p.models
         : Array.isArray(p?.modelIDs)
@@ -1684,6 +1738,18 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private async handleOpenConfigFile(configType: string): Promise<void> {
     const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
+
+    if (configType === 'auth') {
+      const authPath = this.getOpencodeAuthFilePath();
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(authPath)));
+      if (!(await this.pathExists(authPath))) {
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(authPath), Buffer.from('{\n}\n', 'utf8'));
+      }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(authPath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      return;
+    }
+
     if (configType === 'oh-my-opencode') {
       await this.openOhMyConfig();
       return;
@@ -1705,6 +1771,169 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
+  private async handleGetOpencodeConfigFile(
+    configType: 'opencode' | 'oh-my-opencode' | 'auth',
+    scope: 'user' | 'project' | undefined
+  ): Promise<GetOpencodeConfigFileResponse> {
+    const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
+    const resolved = await this.resolveOpencodeConfigFilePath(configType, scope, cwd);
+
+    try {
+      const exists = await this.pathExists(resolved.path);
+      const content = exists
+        ? Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(resolved.path))).toString(
+            'utf8'
+          )
+        : '';
+
+      return {
+        type: 'get_opencode_config_file_response',
+        configType,
+        scope: resolved.scope,
+        path: resolved.path,
+        exists,
+        content
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        type: 'get_opencode_config_file_response',
+        configType,
+        scope: resolved.scope,
+        path: resolved.path,
+        exists: false,
+        content: '',
+        error: msg
+      };
+    }
+  }
+
+  private async handleSaveOpencodeConfigFile(
+    configType: 'opencode' | 'oh-my-opencode' | 'auth',
+    content: string,
+    scope: 'user' | 'project' | undefined
+  ): Promise<SaveOpencodeConfigFileResponse> {
+    const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
+    const resolved = await this.resolveOpencodeConfigFilePath(configType, scope, cwd);
+
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(resolved.path)));
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(resolved.path),
+        Buffer.from(String(content ?? ''), 'utf8')
+      );
+      return {
+        type: 'save_opencode_config_file_response',
+        configType,
+        scope: resolved.scope,
+        success: true,
+        path: resolved.path
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        type: 'save_opencode_config_file_response',
+        configType,
+        scope: resolved.scope,
+        success: false,
+        error: msg
+      };
+    }
+  }
+
+  private async handleGetOpencodeAuthStatus(
+    providerId: string
+  ): Promise<GetOpencodeAuthStatusResponse> {
+    const id = String(providerId ?? '').trim();
+    if (!id) {
+      return {
+        type: 'get_opencode_auth_status_response',
+        providerId: '',
+        exists: false,
+        error: 'providerId 不能为空'
+      };
+    }
+
+    try {
+      const authPath = this.getOpencodeAuthFilePath();
+      if (!(await this.pathExists(authPath))) {
+        return { type: 'get_opencode_auth_status_response', providerId: id, exists: false };
+      }
+
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(authPath))).toString(
+        'utf8'
+      );
+      const json = JSON.parse(raw || '{}') as Record<string, any>;
+      const entry = json?.[id];
+      const authType = typeof entry?.type === 'string' ? entry.type : undefined;
+      const hasApiKey = authType === 'api' ? typeof entry?.key === 'string' && !!entry.key : undefined;
+
+      return {
+        type: 'get_opencode_auth_status_response',
+        providerId: id,
+        exists: !!entry,
+        authType: authType === 'api' || authType === 'oauth' || authType === 'wellknown' ? authType : undefined,
+        hasApiKey
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        type: 'get_opencode_auth_status_response',
+        providerId: id,
+        exists: false,
+        error: msg
+      };
+    }
+  }
+
+  private async handleSetOpencodeAuthApiKey(
+    providerId: string,
+    apiKey: string
+  ): Promise<SetOpencodeAuthApiKeyResponse> {
+    const id = String(providerId ?? '').trim();
+    if (!id) {
+      return {
+        type: 'set_opencode_auth_api_key_response',
+        providerId: '',
+        success: false,
+        error: 'providerId 不能为空'
+      };
+    }
+
+    try {
+      const authPath = this.getOpencodeAuthFilePath();
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(authPath)));
+
+      let raw: Uint8Array | undefined;
+      try {
+        raw = await vscode.workspace.fs.readFile(vscode.Uri.file(authPath));
+      } catch {
+        raw = undefined;
+      }
+      const json = raw ? (JSON.parse(Buffer.from(raw).toString('utf8') || '{}') as Record<string, any>) : {};
+
+      const key = String(apiKey ?? '');
+      if (!key) {
+        delete json[id];
+      } else {
+        json[id] = { type: 'api', key };
+      }
+
+      const text = JSON.stringify(json, null, 2) + '\n';
+      await vscode.workspace.fs.writeFile(vscode.Uri.file(authPath), Buffer.from(text, 'utf8'));
+
+      return { type: 'set_opencode_auth_api_key_response', providerId: id, success: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        type: 'set_opencode_auth_api_key_response',
+        providerId: id,
+        success: false,
+        error: msg
+      };
+    }
+  }
+
   private async handleOpenInTerminal(): Promise<void> {
     const opencodePath =
       this.configService.getValue<string>('opencodeGui.opencodePath', 'opencode') ?? 'opencode';
@@ -1719,6 +1948,70 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     ).trim();
     if (configDir) return configDir;
     return path.join(os.homedir(), '.config', 'opencode');
+  }
+
+  private getXdgConfigHome(): string {
+    const env = String(process.env.XDG_CONFIG_HOME ?? '').trim();
+    if (env) return env;
+    if (process.platform === 'win32') {
+      const appData = String(process.env.APPDATA ?? '').trim();
+      if (appData) return appData;
+      return path.join(os.homedir(), 'AppData', 'Roaming');
+    }
+    return path.join(os.homedir(), '.config');
+  }
+
+  private getXdgDataHome(): string {
+    const env = String(process.env.XDG_DATA_HOME ?? '').trim();
+    if (env) return env;
+    if (process.platform === 'win32') {
+      const localAppData = String(process.env.LOCALAPPDATA ?? '').trim();
+      if (localAppData) return localAppData;
+      return path.join(os.homedir(), 'AppData', 'Local');
+    }
+    return path.join(os.homedir(), '.local', 'share');
+  }
+
+  private getOpencodeUserConfigDir(): string {
+    const override = (this.configService.getValue<string>('opencodeGui.configDir', '') ?? '').trim();
+    if (override) return override;
+    return path.join(this.getXdgConfigHome(), 'opencode');
+  }
+
+  private getOpencodeProjectConfigDir(cwd: string): string {
+    return path.join(cwd, '.opencode');
+  }
+
+  private getOpencodeAuthFilePath(): string {
+    return path.join(this.getXdgDataHome(), 'opencode', 'auth.json');
+  }
+
+  private async resolveOpencodeConfigFilePath(
+    configType: 'opencode' | 'oh-my-opencode' | 'auth',
+    scope: 'user' | 'project' | undefined,
+    cwd: string
+  ): Promise<{ path: string; scope: 'user' | 'project' | undefined }> {
+    if (configType === 'auth') {
+      return { path: this.getOpencodeAuthFilePath(), scope: 'user' };
+    }
+
+    const resolvedScope: 'user' | 'project' = scope === 'project' ? 'project' : 'user';
+    const dir =
+      resolvedScope === 'project' ? this.getOpencodeProjectConfigDir(cwd) : this.getOpencodeUserConfigDir();
+
+    if (configType === 'oh-my-opencode') {
+      return { path: path.join(dir, 'oh-my-opencode.json'), scope: resolvedScope };
+    }
+
+    const jsoncPath = path.join(dir, 'opencode.jsonc');
+    const jsonPath = path.join(dir, 'opencode.json');
+    if (await this.pathExists(jsoncPath)) {
+      return { path: jsoncPath, scope: resolvedScope };
+    }
+    if (await this.pathExists(jsonPath)) {
+      return { path: jsonPath, scope: resolvedScope };
+    }
+    return { path: jsoncPath, scope: resolvedScope };
   }
 
   private getUserGuiConfigPath(configType: 'settings' | 'mcp'): string {
