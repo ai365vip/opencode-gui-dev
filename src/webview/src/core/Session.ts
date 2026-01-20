@@ -21,6 +21,7 @@ export interface UsageData {
   totalTokens: number;
   totalCost: number;
   contextWindow: number;
+  contextPercentage?: number;
 }
 
 export interface AttachmentPayload {
@@ -97,7 +98,8 @@ export class Session {
   readonly usageData = signal<UsageData>({
     totalTokens: 0,
     totalCost: 0,
-    contextWindow: 200000
+    contextWindow: 200000,
+    contextPercentage: 0
   });
   readonly pendingMessages = signal<number>(0);
   readonly messageQueue = signal<QueuedMessage[]>([]);
@@ -696,10 +698,21 @@ export class Session {
     );
     const contextWindow =
       Number.isFinite(rawContext) && rawContext > 0 ? Math.trunc(rawContext) : current.contextWindow;
+
+    const rawPct = Number((usage as any)?.context_percentage);
+    const computedPct =
+      Number.isFinite(rawPct) && rawPct >= 0
+        ? Math.round(rawPct)
+        : contextWindow > 0 && totalTokens > 0
+          ? Math.round((totalTokens / contextWindow) * 100)
+          : current.contextPercentage ?? 0;
+    const contextPercentage = Math.max(0, Math.min(100, computedPct));
+
     this.usageData({
       totalTokens,
       totalCost: current.totalCost,
-      contextWindow
+      contextWindow,
+      contextPercentage
     });
   }
 

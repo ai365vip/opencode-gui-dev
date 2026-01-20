@@ -410,14 +410,18 @@ const progressPercentage = computed(() => {
   if (!s) return 0;
 
   const usage = s.usageData.value;
+  const direct = Number((usage as any)?.contextPercentage);
+  if (Number.isFinite(direct) && direct >= 0) {
+    return Math.max(0, Math.min(100, Math.round(direct)));
+  }
+
   const total = usage.totalTokens;
 
   const model = availableModels.value.find((m) => m.value === currentModelId.value);
-  const windowSize = model?.contextWindow ?? usage.contextWindow ?? 200000;
+  const windowSize = usage.contextWindow ?? model?.contextWindow ?? 200000;
 
   if (typeof total === 'number' && total > 0) {
-    const pct = (total / windowSize) * 100;
-    if (!Number.isFinite(pct)) return 0;
+    const pct = Math.round((total / windowSize) * 100);
     return Math.max(0, Math.min(100, pct));
   }
 

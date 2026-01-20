@@ -2231,6 +2231,34 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     return path.join(cwd, '.opencode');
   }
 
+  private async findOpencodeProjectConfigFilePath(startDir: string): Promise<string | undefined> {
+    let dir = startDir;
+    const root = path.parse(dir).root;
+
+    while (true) {
+      const candidates = [
+        path.join(dir, '.opencode', 'opencode.json'),
+        path.join(dir, '.opencode', 'opencode.jsonc'),
+        path.join(dir, 'opencode.json'),
+        path.join(dir, 'opencode.jsonc')
+      ];
+
+      for (const candidate of candidates) {
+        if (await this.pathExists(candidate)) return candidate;
+      }
+
+      // Stop at git root (best-effort).
+      if (await this.pathExists(path.join(dir, '.git'))) {
+        return undefined;
+      }
+
+      if (dir === root) return undefined;
+      const parent = path.dirname(dir);
+      if (!parent || parent === dir) return undefined;
+      dir = parent;
+    }
+  }
+
   private getOpencodeAuthFilePath(): string {
     return path.join(this.getXdgDataHome(), 'opencode', 'auth.json');
   }
@@ -2250,6 +2278,13 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     if (configType === 'oh-my-opencode') {
       return { path: path.join(dir, 'oh-my-opencode.json'), scope: resolvedScope };
+    }
+
+    if (resolvedScope === 'project') {
+      const found = await this.findOpencodeProjectConfigFilePath(cwd);
+      if (found) {
+        return { path: found, scope: resolvedScope };
+      }
     }
 
     const jsoncPath = path.join(dir, 'opencode.jsonc');

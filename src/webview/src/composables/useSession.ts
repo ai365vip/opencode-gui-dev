@@ -57,6 +57,7 @@ export interface UseSessionReturn {
     totalTokens: number;
     totalCost: number;
     contextWindow: number;
+    contextPercentage?: number;
   }>;
   pendingMessages: Ref<number>; // 队列中的消息数量
   messageQueue: Ref<any[]>; // 消息队列本身

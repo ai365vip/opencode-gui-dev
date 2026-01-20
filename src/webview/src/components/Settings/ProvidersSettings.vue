@@ -41,6 +41,12 @@
       </button>
     </div>
 
+    <div v-if="state.isLoaded && state.path" class="path-row">
+      <span class="path-label">配置文件:</span>
+      <span class="path-value"><code>{{ state.path }}</code></span>
+      <span v-if="!state.exists" class="badge badge-warn">未创建</span>
+    </div>
+
     <div v-if="state.loading" class="loading-state">
       <span class="codicon codicon-loading codicon-modifier-spin"></span>
       <span>正在加载配置…</span>
@@ -1137,6 +1143,29 @@ onMounted(async () => {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 12px;
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 12px 0;
+  font-size: 12px;
+}
+
+.path-label {
+  opacity: 0.75;
+}
+
+.path-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-warn {
+  background: color-mix(in srgb, var(--vscode-testing-iconFailed, #f14c4c) 18%, transparent);
 }
 
 .btn-action {
