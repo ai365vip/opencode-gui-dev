@@ -8,7 +8,7 @@ import { ILogService } from '../logService';
 import { IConfigurationService } from '../configurationService';
 import { IWorkspaceService } from '../workspaceService';
 import { IWebViewService } from '../webViewService';
-import { ITransport } from '../claude/transport';
+import { ITransport } from '../transport';
 import { IOpencodeClientService, type OpencodeEvent } from './OpencodeClientService';
 
 import type {

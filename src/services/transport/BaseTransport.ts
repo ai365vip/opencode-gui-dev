@@ -17,7 +17,7 @@
 /**
  * Transport 接口
  *
- * 用于在 Claude Agent 和客户端（WebView/WebSocket/IPC）之间传递消息
+ * 用于在 Agent 和客户端（WebView/WebSocket/IPC）之间传递消息
  */
 export interface ITransport {
     /**
@@ -64,3 +64,4 @@ export abstract class BaseTransport implements ITransport {
         }
     }
 }
+

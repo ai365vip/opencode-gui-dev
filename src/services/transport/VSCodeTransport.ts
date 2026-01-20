@@ -13,8 +13,8 @@
  */
 
 import { BaseTransport } from './BaseTransport';
-import { ILogService } from '../../logService';
-import { IWebViewService } from '../../webViewService';
+import { ILogService } from '../logService';
+import { IWebViewService } from '../webViewService';
 
 /**
  * VSCode WebView Transport 实现
@@ -44,3 +44,4 @@ export class VSCodeTransport extends BaseTransport {
         }
     }
 }
+

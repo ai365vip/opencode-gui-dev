@@ -5,7 +5,7 @@
 import * as vscode from 'vscode';
 import { InstantiationServiceBuilder } from './di/instantiationServiceBuilder';
 import { registerServices, ILogService, IOpencodeAgentService, IWebViewService, IInlineDiffService } from './services/serviceRegistry';
-import { VSCodeTransport } from './services/claude/transport/VSCodeTransport';
+import { VSCodeTransport } from './services/transport/VSCodeTransport';
 
 /**
  * Extension Activation
