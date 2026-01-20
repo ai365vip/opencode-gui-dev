@@ -1,0 +1,184 @@
+{
+  "name": "opencode-gui-vscode",
+  "displayName": "OpenCode GUI",
+  "description": "在 VSCode 中使用 OpenCode 的图形界面（WebView），自动拉起本地 opencode server。",
+  "version": "0.0.1",
+  "publisher": "Haleclipse",
+  "engines": {
+    "vscode": "^1.98.0",
+    "node": ">=18.0.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "icon": "resources/opencode-logo.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "configuration": {
+      "title": "OpenCode GUI",
+      "properties": {
+        "opencodeGui.selectedModel": {
+          "type": "string",
+          "default": "",
+          "description": "Default model (format: providerID/modelID)"
+        },
+        "opencodeGui.selectedAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Default agent name"
+        },
+        "opencodeGui.opencodePath": {
+          "type": "string",
+          "default": "opencode",
+          "description": "Path to opencode executable"
+        },
+        "opencodeGui.serverBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4096",
+          "description": "OpenCode server base URL (leave default for local server)"
+        },
+        "opencodeGui.configDir": {
+          "type": "string",
+          "default": "",
+          "description": "Optional OPENCODE_CONFIG_DIR override (useful for oh-my-opencode profiles)"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencode-chat-sidebar",
+          "title": "OpenCode",
+          "icon": "resources/opencode-logo.png"
+        }
+      ]
+    },
+    "views": {
+      "opencode-chat-sidebar": [
+        {
+          "icon": "resources/opencode-logo.png",
+          "type": "webview",
+          "id": "opencode.chatView",
+          "name": "OpenCode"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencodeGui.showChat",
+        "title": "Show OpenCode GUI"
+      },
+      {
+        "command": "opencodeGui.addSelectionToChat",
+        "title": "添加选中内容到 OpenCode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "opencodeGui.addFileToChat",
+        "title": "添加到 OpenCode",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "opencodeGui.revertLastChange",
+        "title": "OpenCode: 一键 Revert 最近改动",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "opencodeGui.openOhMyConfig",
+        "title": "OpenCode: 打开 oh-my-opencode 配置",
+        "icon": "$(settings)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "opencodeGui.addSelectionToChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "opencodeGui.addFileToChat",
+          "group": "opencodeGui@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "opencodeGui.addSelectionToChat",
+          "group": "opencodeGui@1",
+          "when": "editorHasSelection"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "dev": "concurrently \"pnpm run dev:webview\" \"pnpm run watch:extension\"",
+    "dev:webview": "vite --config src/webview/vite.config.ts --port 5174 --strictPort",
+    "build:extension": "tsx esbuild.ts --production",
+    "build:webview": "vite build --config src/webview/vite.config.ts",
+    "build": "pnpm run build:webview && pnpm run build:extension",
+    "watch:extension": "tsx esbuild.ts --watch",
+    "watch:webview": "vite build --config src/webview/vite.config.ts --watch",
+    "watch": "concurrently \"pnpm run watch:extension\" \"pnpm run watch:webview\"",
+    "test": "vitest --run",
+    "typecheck": "tsc --noEmit",
+    "typecheck:webview": "vue-tsc -p src/webview/tsconfig.json --noEmit",
+    "typecheck:all": "pnpm run typecheck && pnpm run typecheck:webview",
+    "package": "node scripts/package-vsix.js",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,vue}\" && eslint src --ext ts,tsx,vue --fix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/vscode": "^1.98.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.4",
+    "@typescript-eslint/parser": "^8.46.4",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vscode/vsce": "^3.7.0",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.27.0",
+    "eslint": "^9.39.1",
+    "postcss": "^8.4.49",
+    "prettier": "^3.6.2",
+    "tailwindcss": "^3.4.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.11",
+    "vite-plugin-svg-icons": "^2.0.1",
+    "vitest": "^2.1.8",
+    "vue-tsc": "^3.1.3"
+  },
+  "dependencies": {
+    "@gn8/alien-signals-vue": "^0.1.1",
+    "@mdi/font": "^7.4.47",
+    "@modelcontextprotocol/sdk": "^1.21.1",
+    "@opencode-ai/sdk": "^1.1.25",
+    "@vscode/codicons": "^0.0.41",
+    "@vueuse/core": "^14.0.0",
+    "alien-signals": "^3.1.0",
+    "diff": "^8.0.2",
+    "jsonc-parser": "^3.3.1",
+    "marked": "^17.0.0",
+    "motion-v": "^1.7.4",
+    "path-browserify-esm": "^1.0.6",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.24",
+    "zod": "^4.3.5"
+  },
+  "keywords": [
+    "vscode",
+    "extension",
+    "opencode",
+    "ai",
+    "coding-assistant"
+  ],
+  "license": "AGPL-3.0"
+}

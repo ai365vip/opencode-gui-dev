@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "module": "ES2020",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "moduleResolution": "node",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node", "vscode"]
+  },
+  "include": ["src/**/*", "types/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.spec.ts",
+    "src/webview/**",
+    "src/webview.react.backup/**",
+    "src/services/claude/ClaudeAgentService.ts",
+    "src/services/claude/ClaudeSdkService.ts",
+    "src/services/claude/ClaudeSessionService.ts",
+    "src/services/claude/handlers/**"
+  ]
+}

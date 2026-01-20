@@ -1,0 +1,866 @@
+/**
+ * InlineDiffService - 文件修改拦截服务（Conflict Marker 风格）
+ *
+ * 核心思路：像 Git merge conflict 一样，直接在原文件中插入 conflict markers
+ *
+ * 格式：
+ * ```
+ * <<<<<<< Original [block-0]
+ * 旧内容行1
+ * 旧内容行2
+ * =======
+ * 新内容行1
+ * 新内容行2
+ * >>>>>>> Claude's Change
+ * ```
+ *
+ * 每个修改块完全独立，accept/reject 时只需要删除对应的标记和不需要的内容
+ */
+
+import * as vscode from 'vscode';
+import { createDecorator } from '../di/instantiation';
+import { ILogService } from './logService';
+
+export const IInlineDiffService = createDecorator<IInlineDiffService>('inlineDiffService');
+
+export interface IInlineDiffService {
+    readonly _serviceBrand: undefined;
+    markFileForToolModification(filePath: string, channelId: string): void;
+    setWorkModeProvider(provider: (channelId: string) => string | null): void;
+}
+
+/**
+ * Conflict Block：使用 conflict markers 标记的修改块
+ */
+interface ConflictBlock {
+    id: string;  // 唯一标识 (block-0, block-1, ...)
+    startLine: number;  // `<<<<<<< Original [block-X]` 所在行号
+    separatorLine: number;  // `=======` 所在行号
+    endLine: number;  // `>>>>>>> Claude's Change` 所在行号
+}
+
+/**
+ * CodeLens Provider：在每个 conflict marker 上方显示"接受/拒绝"按钮
+ */
+class ConflictCodeLensProvider implements vscode.CodeLensProvider {
+    private _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
+    public readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
+
+    constructor(
+        private logService: ILogService
+    ) {}
+
+    refresh(): void {
+        this._onDidChangeCodeLenses.fire();
+    }
+
+    provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+        // 实时解析文档中的 conflict markers
+        const blocks = this.parseConflictBlocks(document);
+        if (blocks.length === 0) {
+            return [];
+        }
+
+        const lenses: vscode.CodeLens[] = [];
+        for (let i = 0; i < blocks.length; i++) {
+            const block = blocks[i];
+            const range = new vscode.Range(block.startLine, 0, block.startLine, 0);
+
+            // "接受" 按钮
+            lenses.push(new vscode.CodeLens(range, {
+                title: `$(check) 接受`,
+                command: 'claudix.acceptDiffBlock',
+                arguments: [document.uri.fsPath, block.id]
+            }));
+
+            // "拒绝" 按钮
+            lenses.push(new vscode.CodeLens(range, {
+                title: `$(x) 拒绝`,
+                command: 'claudix.rejectDiffBlock',
+                arguments: [document.uri.fsPath, block.id]
+            }));
+
+            // 修改计数器
+            lenses.push(new vscode.CodeLens(range, {
+                title: `${i + 1} / ${blocks.length}`,
+                command: ''
+            }));
+        }
+
+        return lenses;
+    }
+
+    /**
+     * 解析文档中的 conflict markers
+     */
+    parseConflictBlocks(document: vscode.TextDocument): ConflictBlock[] {
+        const blocks: ConflictBlock[] = [];
+        const lines = document.getText().split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const match = line.match(/^<<<<<<< Original \[(block-\d+)\]$/);
+            if (match) {
+                const blockId = match[1];
+                // 找到对应的 ======= 和 >>>>>>>
+                let separatorLine = -1;
+                let endLine = -1;
+
+                for (let j = i + 1; j < lines.length; j++) {
+                    if (lines[j] === '=======') {
+                        separatorLine = j;
+                    } else if (lines[j] === ">>>>>>> Claude's Change") {
+                        endLine = j;
+                        break;
+                    }
+                }
+
+                if (separatorLine !== -1 && endLine !== -1) {
+                    blocks.push({
+                        id: blockId,
+                        startLine: i,
+                        separatorLine,
+                        endLine
+                    });
+                }
+            }
+        }
+
+        return blocks;
+    }
+}
+
+export class InlineDiffService implements IInlineDiffService {
+    readonly _serviceBrand: undefined;
+
+    private disposables: vscode.Disposable[] = [];
+    private documentContentCache = new Map<string, string>();  // 缓存文档内容
+    private isApplyingChange = false;  // 标记：正在应用修改
+
+    // ===== 以下是inline diff功能，暂时注释 =====
+    // private originalContentCache = new Map<string, string>();  // 缓存真实原始内容（不包含markers）
+    // private conflictStartDecoration: vscode.TextEditorDecorationType;
+    // private originalContentDecoration: vscode.TextEditorDecorationType;
+    // private separatorDecoration: vscode.TextEditorDecorationType;
+    // private modifiedContentDecoration: vscode.TextEditorDecorationType;
+    // private conflictEndDecoration: vscode.TextEditorDecorationType;
+    // private codeLensProvider: ConflictCodeLensProvider;
+    // ===== inline diff 结束 =====
+
+    // 记录即将被工具修改的文件（文件路径 -> channelId）
+    private pendingToolModifications = new Map<string, string>();
+    private cleanupTimers = new Map<string, NodeJS.Timeout>();
+
+    // WorkMode 提供者（根据 channelId 获取对应的 workMode）
+    private workModeProvider?: (channelId: string) => string | null;
+
+    constructor(
+        @ILogService private readonly logService: ILogService
+    ) {
+        this.logService.warn('🔧 [InlineDiffService] 构造函数被调用');
+
+        // ===== 以下装饰器和CodeLens注册已注释，inline diff功能暂时禁用 =====
+        /*
+        // 初始化装饰器类型
+        this.conflictStartDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(128, 128, 128, 0.2)',
+            isWholeLine: true
+        });
+
+        this.originalContentDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(255, 0, 0, 0.2)',
+            isWholeLine: true,
+            before: {
+                contentText: '-',
+                color: 'rgba(255, 0, 0, 0.8)',
+                margin: '0 10px 0 0',
+                fontWeight: 'bold'
+            }
+        });
+
+        this.separatorDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(128, 128, 128, 0.2)',
+            isWholeLine: true
+        });
+
+        this.modifiedContentDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(0, 255, 0, 0.2)',
+            isWholeLine: true,
+            before: {
+                contentText: '+',
+                color: 'rgba(0, 255, 0, 0.8)',
+                margin: '0 10px 0 0',
+                fontWeight: 'bold'
+            }
+        });
+
+        this.conflictEndDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(128, 128, 128, 0.2)',
+            isWholeLine: true
+        });
+
+        // 初始化 CodeLens Provider
+        this.codeLensProvider = new ConflictCodeLensProvider(this.logService);
+
+        // 注册 CodeLens Provider
+        this.disposables.push(
+            vscode.languages.registerCodeLensProvider({ scheme: 'file' }, this.codeLensProvider)
+        );
+
+        // 注册命令
+        this.disposables.push(
+            vscode.commands.registerCommand('claudix.acceptDiffBlock', (filePath: string, blockId: string) => {
+                this.acceptBlock(filePath, blockId);
+            })
+        );
+
+        this.disposables.push(
+            vscode.commands.registerCommand('claudix.rejectDiffBlock', (filePath: string, blockId: string) => {
+                this.rejectBlock(filePath, blockId);
+            })
+        );
+
+        this.disposables.push(
+            vscode.commands.registerCommand('claudix.acceptAllDiffs', () => {
+                const editor = vscode.window.activeTextEditor;
+                if (editor) {
+                    this.acceptAllBlocks(editor.document.uri.fsPath);
+                }
+            })
+        );
+
+        this.disposables.push(
+            vscode.commands.registerCommand('claudix.rejectAllDiffs', () => {
+                const editor = vscode.window.activeTextEditor;
+                if (editor) {
+                    this.rejectAllBlocks(editor.document.uri.fsPath);
+                }
+            })
+        );
+        */
+        // ===== inline diff 注册结束 =====
+
+        // ===== 文件监听功能暂时禁用 =====
+        // this.startMonitoringFileChanges();
+
+        this.logService.warn('✅ [InlineDiffService] 构造函数执行完成（所有功能已注释）');
+    }
+
+    /**
+     * 设置 WorkMode 提供者（由 ClaudeAgentService 调用，避免循环依赖）
+     */
+    setWorkModeProvider(provider: (channelId: string) => string | null): void {
+        this.workModeProvider = provider;
+        this.logService.warn('✅ [InlineDiffService] WorkMode 提供者已设置');
+    }
+
+    /**
+     * 获取指定 channel 的工作模式
+     */
+    private getChannelWorkMode(channelId: string): string | null {
+        return this.workModeProvider ? this.workModeProvider(channelId) : null;
+    }
+
+    /**
+     * 标记文件即将被工具修改（由 ClaudeAgentService 调用）
+     */
+    markFileForToolModification(filePath: string, channelId: string): void {
+        // 规范化路径：将相对路径转换为绝对路径
+        let normalizedPath = filePath.replace(/\//g, '\\');
+
+        // 如果是相对路径，转换为绝对路径
+        if (!normalizedPath.match(/^[a-zA-Z]:\\/)) {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                const path = require('path');
+                normalizedPath = path.join(workspaceFolder.uri.fsPath, normalizedPath).replace(/\//g, '\\');
+                this.logService.warn(`   -> 转换相对路径为绝对路径: ${normalizedPath}`);
+            }
+        }
+
+        this.logService.warn(`🔖 [ToolTracker] 标记文件将被工具修改: ${normalizedPath.substring(normalizedPath.lastIndexOf('\\') + 1)} (channel: ${channelId})`);
+        this.pendingToolModifications.set(normalizedPath, channelId);
+
+        const oldTimer = this.cleanupTimers.get(normalizedPath);
+        if (oldTimer) {
+            clearTimeout(oldTimer);
+        }
+
+        const timer = setTimeout(() => {
+            this.pendingToolModifications.delete(normalizedPath);
+            this.cleanupTimers.delete(normalizedPath);
+            this.logService.warn(`⏰ [ToolTracker] 自动清除标记: ${normalizedPath.substring(normalizedPath.lastIndexOf('\\') + 1)}`);
+        }, 30000);  // 30秒超时
+
+        this.cleanupTimers.set(normalizedPath, timer);
+    }
+
+    /**
+     * 开始监听文件变化
+     * ===== 此功能已全部注释，暂时禁用 =====
+     */
+    /*
+    private startMonitoringFileChanges(): void {
+        this.logService.warn('🎯 [FileMonitor] 开始监听文件变化');
+
+        vscode.workspace.textDocuments.forEach(doc => {
+            this.documentContentCache.set(doc.uri.fsPath, doc.getText());
+        });
+
+        this.disposables.push(
+            vscode.workspace.onDidChangeTextDocument(async (event) => {
+                if (this.isApplyingChange) {
+                    return;
+                }
+
+                const doc = event.document;
+                const filePath = doc.uri.fsPath;
+
+                if (doc.uri.scheme !== 'file') {
+                    return;
+                }
+
+                const oldContent = this.documentContentCache.get(filePath);
+                if (!oldContent) {
+                    this.documentContentCache.set(filePath, doc.getText());
+                    return;
+                }
+
+                const newContent = doc.getText();
+                const markedChannelId = this.pendingToolModifications.get(filePath);
+                const isMarkedForToolModification = markedChannelId !== undefined;
+
+                this.logService.warn(`📝 [FileMonitor] 文档变化: ${filePath.substring(filePath.lastIndexOf('\\') + 1)}`);
+                this.logService.warn(`  -> 工具标记: ${isMarkedForToolModification} (channel: ${markedChannelId || 'none'})`);
+
+                if (isMarkedForToolModification && markedChannelId) {
+                    this.pendingToolModifications.delete(filePath);
+                    const timer = this.cleanupTimers.get(filePath);
+                    if (timer) {
+                        clearTimeout(timer);
+                        this.cleanupTimers.delete(filePath);
+                    }
+
+                    const workMode = this.getChannelWorkMode(markedChannelId);
+                    this.logService.warn(`  -> Channel ${markedChannelId} 的工作模式: ${workMode || 'null'}`);
+
+                    // 暂时注释 inline diff 功能，直接自动应用所有修改
+                    // TODO: 以后需要时再启用 inline diff
+                    // if (workMode === 'agent') {
+                    //     // Agent 模式：自动应用修改
+                    //     this.logService.warn(`✅ [FileMonitor] Agent 模式，自动应用修改`);
+                    //     this.documentContentCache.set(filePath, newContent);
+                    //     const fileName = filePath.substring(filePath.lastIndexOf('\\') + 1);
+                    //     vscode.window.showInformationMessage(`✅ 已自动应用 Claude 修改: ${fileName}`);
+                    // } else {
+                    //     // Default 模式：显示 conflict markers
+                    //     this.logService.warn(`⚠️ [FileMonitor] ${workMode || 'Default'} 模式，显示 conflict markers`);
+                    //
+                    //     // 如果是第一次修改，保存真实原始内容
+                    //     if (!this.originalContentCache.has(filePath)) {
+                    //         this.originalContentCache.set(filePath, oldContent);
+                    //     }
+                    //
+                    //     // 使用真实原始内容（不包含markers）计算diff
+                    //     const realOriginalContent = this.originalContentCache.get(filePath) || oldContent;
+                    //     await this.insertConflictMarkers(filePath, realOriginalContent, newContent);
+                    // }
+
+                    // 所有模式都自动应用修改
+                    this.logService.warn(`✅ [FileMonitor] 自动应用修改`);
+                    this.documentContentCache.set(filePath, newContent);
+                    const fileName = filePath.substring(filePath.lastIndexOf('\\') + 1);
+                    vscode.window.showInformationMessage(`✅ 已自动应用 Claude 修改: ${fileName}`);
+                } else {
+                    // 用户手动修改，更新缓存
+                    this.documentContentCache.set(filePath, newContent);
+                }
+            })
+        );
+
+        // ===== 编辑器切换监听已注释，inline diff功能暂时禁用 =====
+        // this.disposables.push(
+        //     vscode.window.onDidChangeActiveTextEditor(editor => {
+        //         if (editor) {
+        //             this.updateDecorations(editor);
+        //         }
+        //     })
+        // );
+
+        this.logService.warn('✅ [FileMonitor] 文件监听已启动');
+    }
+    */
+    // ===== 文件监听功能结束 =====
+
+    /**
+     * 插入 conflict markers 到文档
+     * ===== 此功能已全部注释，暂时禁用 =====
+     */
+    /*
+    private async insertConflictMarkers(filePath: string, oldContent: string, newContent: string): Promise<void> {
+        const fileName = filePath.substring(filePath.lastIndexOf('\\') + 1);
+        this.logService.warn(`🎨 [ConflictMarker] 插入 conflict markers: ${fileName}`);
+
+        try {
+            // 撤销修改
+            await this.undoChanges(filePath, oldContent);
+
+            // 计算 diff
+            const diffBlocks = this.calculateDiff(oldContent, newContent);
+            this.logService.warn(`  -> 找到 ${diffBlocks.length} 个修改块`);
+
+            if (diffBlocks.length === 0) {
+                this.logService.warn(`  -> 无差异，跳过`);
+                return;
+            }
+
+            // 构建带 conflict markers 的内容
+            const contentWithMarkers = this.buildContentWithMarkers(oldContent, newContent, diffBlocks);
+
+            // 应用到文档
+            this.isApplyingChange = true;
+            try {
+                const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+                const edit = new vscode.WorkspaceEdit();
+                const fullRange = new vscode.Range(
+                    doc.positionAt(0),
+                    doc.positionAt(doc.getText().length)
+                );
+                edit.replace(doc.uri, fullRange, contentWithMarkers);
+                await vscode.workspace.applyEdit(edit);
+
+                // 更新缓存
+                this.documentContentCache.set(filePath, contentWithMarkers);
+
+                // 显示文档并更新装饰
+                const editor = await vscode.window.showTextDocument(doc);
+                this.updateDecorations(editor);
+
+                // 刷新 CodeLens
+                this.codeLensProvider.refresh();
+
+                vscode.window.setStatusBarMessage(
+                    `⚡ Claude 做了 ${diffBlocks.length} 处修改 - 点击上方按钮接受/拒绝`,
+                    15000
+                );
+
+                this.logService.warn(`✅ [ConflictMarker] 已插入 ${diffBlocks.length} 个 conflict markers`);
+            } finally {
+                this.isApplyingChange = false;
+            }
+        } catch (error) {
+            this.logService.error(`❌ [ConflictMarker] 插入失败: ${error}`);
+            vscode.window.showErrorMessage(`插入 conflict markers 失败: ${error}`);
+        }
+    }
+
+    // ===== 以下所有 inline diff 相关方法已全部注释 =====
+    /*
+    private async undoChanges(filePath: string, oldContent: string): Promise<void> {
+        this.isApplyingChange = true;
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                doc.positionAt(0),
+                doc.positionAt(doc.getText().length)
+            );
+            edit.replace(doc.uri, fullRange, oldContent);
+            await vscode.workspace.applyEdit(edit);
+            this.logService.warn('↩️ [FileMonitor] 已撤销修改');
+        } finally {
+            this.isApplyingChange = false;
+        }
+    }
+
+    /**
+     * 计算 diff（简单的逐行对比）
+     */
+    private calculateDiff(oldContent: string, newContent: string): { startLine: number; deletedLines: string[]; addedLines: string[]; }[] {
+        const oldLines = oldContent.split('\n');
+        const newLines = newContent.split('\n');
+        const blocks: { startLine: number; deletedLines: string[]; addedLines: string[]; }[] = [];
+
+        let i = 0;
+        const maxLines = Math.max(oldLines.length, newLines.length);
+
+        while (i < maxLines) {
+            // 找到第一个不同的位置
+            while (i < oldLines.length && i < newLines.length && oldLines[i] === newLines[i]) {
+                i++;
+            }
+
+            if (i >= maxLines) {
+                break;
+            }
+
+            // 收集连续的不同行
+            const deletedLines: string[] = [];
+            const addedLines: string[] = [];
+            const blockStart = i;
+
+            while (i < maxLines && (i >= oldLines.length || i >= newLines.length || oldLines[i] !== newLines[i])) {
+                if (i < oldLines.length) {
+                    deletedLines.push(oldLines[i]);
+                }
+                if (i < newLines.length) {
+                    addedLines.push(newLines[i]);
+                }
+                i++;
+
+                // 最多 50 行一个块
+                if (i - blockStart >= 50) {
+                    break;
+                }
+            }
+
+            if (deletedLines.length > 0 || addedLines.length > 0) {
+                blocks.push({
+                    startLine: blockStart,
+                    deletedLines,
+                    addedLines
+                });
+            }
+        }
+
+        return blocks;
+    }
+
+    /**
+     * 构建带 conflict markers 的内容
+     */
+    private buildContentWithMarkers(
+        oldContent: string,
+        newContent: string,
+        diffBlocks: { startLine: number; deletedLines: string[]; addedLines: string[]; }[]
+    ): string {
+        const oldLines = oldContent.split('\n');
+        const result: string[] = [];
+        let lastLine = 0;
+
+        for (let i = 0; i < diffBlocks.length; i++) {
+            const block = diffBlocks[i];
+
+            // 添加未修改的行
+            for (let j = lastLine; j < block.startLine; j++) {
+                result.push(oldLines[j]);
+            }
+
+            // 添加 conflict markers
+            result.push(`<<<<<<< Original [block-${i}]`);
+            for (const line of block.deletedLines) {
+                result.push(line);
+            }
+            result.push('=======');
+            for (const line of block.addedLines) {
+                result.push(line);
+            }
+            result.push(">>>>>>> Claude's Change");
+
+            lastLine = block.startLine + block.deletedLines.length;
+        }
+
+        // 添加剩余的未修改行
+        for (let i = lastLine; i < oldLines.length; i++) {
+            result.push(oldLines[i]);
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * 更新装饰（红色/绿色标记）
+     */
+    private updateDecorations(editor: vscode.TextEditor): void {
+        const blocks = this.codeLensProvider.parseConflictBlocks(editor.document);
+        if (blocks.length === 0) {
+            // 清除所有装饰
+            editor.setDecorations(this.conflictStartDecoration, []);
+            editor.setDecorations(this.originalContentDecoration, []);
+            editor.setDecorations(this.separatorDecoration, []);
+            editor.setDecorations(this.modifiedContentDecoration, []);
+            editor.setDecorations(this.conflictEndDecoration, []);
+            return;
+        }
+
+        const startRanges: vscode.Range[] = [];
+        const originalRanges: vscode.Range[] = [];
+        const separatorRanges: vscode.Range[] = [];
+        const modifiedRanges: vscode.Range[] = [];
+        const endRanges: vscode.Range[] = [];
+
+        for (const block of blocks) {
+            // <<<<<<< 行
+            startRanges.push(new vscode.Range(block.startLine, 0, block.startLine, editor.document.lineAt(block.startLine).text.length));
+
+            // 旧内容（红色）
+            for (let i = block.startLine + 1; i < block.separatorLine; i++) {
+                originalRanges.push(new vscode.Range(i, 0, i, editor.document.lineAt(i).text.length));
+            }
+
+            // ======= 行
+            separatorRanges.push(new vscode.Range(block.separatorLine, 0, block.separatorLine, editor.document.lineAt(block.separatorLine).text.length));
+
+            // 新内容（绿色）
+            for (let i = block.separatorLine + 1; i < block.endLine; i++) {
+                modifiedRanges.push(new vscode.Range(i, 0, i, editor.document.lineAt(i).text.length));
+            }
+
+            // >>>>>>> 行
+            endRanges.push(new vscode.Range(block.endLine, 0, block.endLine, editor.document.lineAt(block.endLine).text.length));
+        }
+
+        editor.setDecorations(this.conflictStartDecoration, startRanges);
+        editor.setDecorations(this.originalContentDecoration, originalRanges);
+        editor.setDecorations(this.separatorDecoration, separatorRanges);
+        editor.setDecorations(this.modifiedContentDecoration, modifiedRanges);
+        editor.setDecorations(this.conflictEndDecoration, endRanges);
+    }
+
+    /**
+     * 接受单个 block
+     */
+    private async acceptBlock(filePath: string, blockId: string): Promise<void> {
+        this.logService.warn(`✅ [AcceptBlock] 接受修改块: ${blockId}`);
+
+        this.isApplyingChange = true;
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            const blocks = this.codeLensProvider.parseConflictBlocks(doc);
+            const block = blocks.find(b => b.id === blockId);
+
+            if (!block) {
+                this.logService.warn(`⚠️ [AcceptBlock] 未找到 block: ${blockId}`);
+                return;
+            }
+
+            // 删除整个 conflict block，只保留新内容（绿色部分）
+            const lines = doc.getText().split('\n');
+            const newLines = [
+                ...lines.slice(0, block.startLine),
+                ...lines.slice(block.separatorLine + 1, block.endLine),
+                ...lines.slice(block.endLine + 1)
+            ];
+
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                doc.positionAt(0),
+                doc.positionAt(doc.getText().length)
+            );
+            edit.replace(doc.uri, fullRange, newLines.join('\n'));
+            await vscode.workspace.applyEdit(edit);
+
+            // 更新缓存
+            this.documentContentCache.set(filePath, newLines.join('\n'));
+
+            // 刷新装饰和 CodeLens
+            const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === filePath);
+            if (editor) {
+                this.updateDecorations(editor);
+            }
+            this.codeLensProvider.refresh();
+
+            // 检查是否还有其他 conflicts
+            const remainingBlocks = this.codeLensProvider.parseConflictBlocks(await vscode.workspace.openTextDocument(vscode.Uri.file(filePath)));
+            if (remainingBlocks.length === 0) {
+                // 所有 conflicts 已解决，清理缓存并保存文件
+                this.originalContentCache.delete(filePath);
+                await doc.save();
+                vscode.window.setStatusBarMessage(`✅ 所有修改已处理完成`, 5000);
+            } else {
+                vscode.window.setStatusBarMessage(`✅ 已接受修改，剩余 ${remainingBlocks.length} 处`, 3000);
+            }
+
+            this.logService.warn(`✅ [AcceptBlock] 已接受 ${blockId}`);
+        } finally {
+            this.isApplyingChange = false;
+        }
+    }
+
+    /**
+     * 拒绝单个 block
+     */
+    private async rejectBlock(filePath: string, blockId: string): Promise<void> {
+        this.logService.warn(`❌ [RejectBlock] 拒绝修改块: ${blockId}`);
+
+        this.isApplyingChange = true;
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            const blocks = this.codeLensProvider.parseConflictBlocks(doc);
+            const block = blocks.find(b => b.id === blockId);
+
+            if (!block) {
+                this.logService.warn(`⚠️ [RejectBlock] 未找到 block: ${blockId}`);
+                return;
+            }
+
+            // 删除整个 conflict block，只保留旧内容（红色部分）
+            const lines = doc.getText().split('\n');
+            const newLines = [
+                ...lines.slice(0, block.startLine),
+                ...lines.slice(block.startLine + 1, block.separatorLine),
+                ...lines.slice(block.endLine + 1)
+            ];
+
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                doc.positionAt(0),
+                doc.positionAt(doc.getText().length)
+            );
+            edit.replace(doc.uri, fullRange, newLines.join('\n'));
+            await vscode.workspace.applyEdit(edit);
+
+            // 更新缓存
+            this.documentContentCache.set(filePath, newLines.join('\n'));
+
+            // 刷新装饰和 CodeLens
+            const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === filePath);
+            if (editor) {
+                this.updateDecorations(editor);
+            }
+            this.codeLensProvider.refresh();
+
+            // 检查是否还有其他 conflicts
+            const remainingBlocks = this.codeLensProvider.parseConflictBlocks(await vscode.workspace.openTextDocument(vscode.Uri.file(filePath)));
+            if (remainingBlocks.length === 0) {
+                // 所有 conflicts 已解决，清理缓存并保存文件
+                this.originalContentCache.delete(filePath);
+                await doc.save();
+                vscode.window.setStatusBarMessage(`✅ 所有修改已处理完成`, 5000);
+            } else {
+                vscode.window.setStatusBarMessage(`❌ 已拒绝修改，剩余 ${remainingBlocks.length} 处`, 3000);
+            }
+
+            this.logService.warn(`❌ [RejectBlock] 已拒绝 ${blockId}`);
+        } finally {
+            this.isApplyingChange = false;
+        }
+    }
+
+    /**
+     * 接受所有修改
+     */
+    private async acceptAllBlocks(filePath: string): Promise<void> {
+        this.logService.warn(`✅ [AcceptAll] 接受所有修改`);
+
+        this.isApplyingChange = true;
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            const blocks = this.codeLensProvider.parseConflictBlocks(doc);
+
+            if (blocks.length === 0) {
+                return;
+            }
+
+            const lines = doc.getText().split('\n');
+            const newLines: string[] = [];
+            let lastLine = 0;
+
+            for (const block of blocks) {
+                // 添加未修改的行
+                newLines.push(...lines.slice(lastLine, block.startLine));
+                // 添加新内容（跳过旧内容和标记）
+                newLines.push(...lines.slice(block.separatorLine + 1, block.endLine));
+                lastLine = block.endLine + 1;
+            }
+
+            // 添加剩余行
+            newLines.push(...lines.slice(lastLine));
+
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                doc.positionAt(0),
+                doc.positionAt(doc.getText().length)
+            );
+            edit.replace(doc.uri, fullRange, newLines.join('\n'));
+            await vscode.workspace.applyEdit(edit);
+
+            // 更新缓存
+            this.documentContentCache.set(filePath, newLines.join('\n'));
+
+            // 清除装饰
+            const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === filePath);
+            if (editor) {
+                this.updateDecorations(editor);
+            }
+            this.codeLensProvider.refresh();
+
+            // 清理缓存并保存文件
+            this.originalContentCache.delete(filePath);
+            await doc.save();
+            vscode.window.setStatusBarMessage(`✅ 已接受所有修改`, 5000);
+        } finally {
+            this.isApplyingChange = false;
+        }
+    }
+
+    /**
+     * 拒绝所有修改
+     */
+    private async rejectAllBlocks(filePath: string): Promise<void> {
+        this.logService.warn(`❌ [RejectAll] 拒绝所有修改`);
+
+        this.isApplyingChange = true;
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            const blocks = this.codeLensProvider.parseConflictBlocks(doc);
+
+            if (blocks.length === 0) {
+                return;
+            }
+
+            const lines = doc.getText().split('\n');
+            const newLines: string[] = [];
+            let lastLine = 0;
+
+            for (const block of blocks) {
+                // 添加未修改的行
+                newLines.push(...lines.slice(lastLine, block.startLine));
+                // 添加旧内容（跳过新内容和标记）
+                newLines.push(...lines.slice(block.startLine + 1, block.separatorLine));
+                lastLine = block.endLine + 1;
+            }
+
+            // 添加剩余行
+            newLines.push(...lines.slice(lastLine));
+
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                doc.positionAt(0),
+                doc.positionAt(doc.getText().length)
+            );
+            edit.replace(doc.uri, fullRange, newLines.join('\n'));
+            await vscode.workspace.applyEdit(edit);
+
+            // 更新缓存
+            this.documentContentCache.set(filePath, newLines.join('\n'));
+
+            // 清除装饰
+            const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === filePath);
+            if (editor) {
+                this.updateDecorations(editor);
+            }
+            this.codeLensProvider.refresh();
+
+            // 清理缓存并保存文件
+            this.originalContentCache.delete(filePath);
+            await doc.save();
+            vscode.window.setStatusBarMessage(`❌ 已拒绝所有修改`, 5000);
+        } finally {
+            this.isApplyingChange = false;
+        }
+    }
+
+    /**
+     * 清理资源
+     */
+    dispose(): void {
+        this.disposables.forEach(d => d.dispose());
+        // ===== 以下装饰器清理已注释 =====
+        // this.conflictStartDecoration?.dispose();
+        // this.originalContentDecoration?.dispose();
+        // this.separatorDecoration?.dispose();
+        // this.modifiedContentDecoration?.dispose();
+        // this.conflictEndDecoration?.dispose();
+    }
+}

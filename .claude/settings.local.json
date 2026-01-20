@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(superpowers:writing-plans)",
+      "Skill(superpowers:writing-plans:*)"
+    ]
+  }
+}
