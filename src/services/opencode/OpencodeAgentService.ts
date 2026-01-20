@@ -37,6 +37,7 @@ import type {
   DeleteSkillResponse,
   SetModelResponse,
   SetVariantResponse,
+  GetProgressResponse,
   SetPermissionModeResponse,
   SetThinkingLevelResponse,
   ListFilesResponse,
@@ -86,8 +87,10 @@ type OpenCodeMessageInfo = {
   sessionID: string;
   role: 'user' | 'assistant';
   title?: string;
-  time?: { created: number; updated?: number };
+  time?: { created: number; updated?: number; completed?: number };
   error?: unknown;
+  tokens?: unknown;
+  cost?: unknown;
 };
 
 type OpenCodeTextPart = {
@@ -160,6 +163,11 @@ type ChannelState = {
   reasoningParts: Map<string, { messageID: string; text: string }>;
   sentToolUseIds: Set<string>;
 
+  pendingUsage?: any;
+  pendingUsageMessageId?: string;
+  lastUsageMessageId?: string;
+  lastUsageSignature?: string;
+
   lastRevert?: { messageID: string; partID?: string };
 };
 
@@ -187,6 +195,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   private readonly requestWaiters = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+  private readonly progressEventsByChannel = new Map<
+    string,
+    Array<{ ts: number; type: string; summary: string }>
   >();
 
   constructor(
@@ -275,7 +287,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       path.join(os.homedir(), '.config', 'opencode', 'oh-my-opencode.json')
     ].filter(Boolean) as string[];
 
-    const target = await this.pickExistingPath([projectPath, ...userPaths]);
+    const xdgPath = path.join(this.getXdgConfigHome(), 'opencode', 'oh-my-opencode.json');
+    const target = (await this.pickExistingPath([projectPath, ...userPaths])) ?? xdgPath;
     if (!target) {
       vscode.window.showWarningMessage(
         '未找到 oh-my-opencode 配置：.opencode/oh-my-opencode.json 或 ~/.config/opencode/oh-my-opencode.json'
@@ -283,6 +296,13 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       return;
     }
 
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(target)));
+    if (!(await this.pathExists(target))) {
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(target),
+        Buffer.from('{\n  \"disabled_hooks\": []\n}\n', 'utf8')
+      );
+    }
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
     await vscode.window.showTextDocument(doc, { preview: false });
   }
@@ -322,6 +342,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       this.channels.delete(channelId);
     }
 
+    this.progressEventsByChannel.set(channelId, []);
+
     const state: ChannelState = {
       channelId,
       cwd: resolvedCwd,
@@ -347,10 +369,13 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       });
     });
 
-    // Tell UI the session id (and set busy)
+    // Tell UI the session id.
+    // NOTE: WebView treats subtype === 'init' as "busy". When we only create/bind a session
+    // (no initial prompt), we must NOT flip UI into busy state.
+    this.pushProgressEvent(channelId, 'session', initialMessage ? 'running' : 'ready');
     this.sendToChannel(channelId, {
       type: 'system',
-      subtype: 'init',
+      subtype: initialMessage ? 'init' : 'session',
       session_id: sessionId,
       timestamp: Date.now()
     });
@@ -414,6 +439,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       } catch {}
       this.channels.delete(channelId);
     }
+    this.progressEventsByChannel.delete(channelId);
 
     this.transport?.send({ type: 'close_channel', channelId });
   }
@@ -464,6 +490,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       if (variant) body.variant = variant;
 
       state.running = true;
+      this.pushProgressEvent(state.channelId, 'session', 'running');
       this.sendToChannel(state.channelId, {
         type: 'system',
         subtype: 'init',
@@ -504,6 +531,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
 
     state.running = true;
+    this.pushProgressEvent(state.channelId, 'session', 'running');
     await this.client.prompt(state.sessionId, body, state.cwd);
   }
 
@@ -700,6 +728,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private async handleSessionCompact(state: ChannelState): Promise<void> {
     state.running = true;
+    this.pushProgressEvent(state.channelId, 'session', 'running');
     this.sendToChannel(state.channelId, {
       type: 'system',
       subtype: 'init',
@@ -754,6 +783,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private async handleSessionInit(state: ChannelState, args: string): Promise<void> {
     state.running = true;
+    this.pushProgressEvent(state.channelId, 'session', 'running');
     this.sendToChannel(state.channelId, {
       type: 'system',
       subtype: 'init',
@@ -844,6 +874,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     if (info.role === 'assistant') {
       state.assistantMessageIds.add(info.id);
+
+      const usage = this.buildUsageFromTokens((info as any).tokens);
+      if (usage) {
+        state.pendingUsage = usage;
+        state.pendingUsageMessageId = info.id;
+      }
     }
   }
 
@@ -900,12 +936,148 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
   }
 
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private parseToolRawInput(raw: unknown): Record<string, unknown> | undefined {
+    const text = String(raw ?? '').trim();
+    if (!text) return undefined;
+
+    const tryJsonObject = (candidate: string): Record<string, unknown> | undefined => {
+      try {
+        const parsed = JSON.parse(candidate);
+        return this.isPlainObject(parsed) ? (parsed as Record<string, unknown>) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const direct = tryJsonObject(text);
+    if (direct) return direct;
+
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      const sub = tryJsonObject(text.slice(start, end + 1));
+      if (sub) return sub;
+    }
+
+    const out: Record<string, unknown> = {};
+    const pairRe =
+      /([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]\s*(\"([^\"\\\\]|\\\\.)*\"|'([^'\\\\]|\\\\.)*'|[^\s]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pairRe.exec(text))) {
+      const key = m[1];
+      let rawVal = m[2];
+      if (!key || !rawVal) continue;
+      if (
+        (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
+        (rawVal.startsWith("'") && rawVal.endsWith("'"))
+      ) {
+        rawVal = rawVal.slice(1, -1);
+      }
+      const lower = rawVal.toLowerCase();
+      if (lower === 'true' || lower === 'false') {
+        out[key] = lower === 'true';
+        continue;
+      }
+      const num = Number(rawVal);
+      if (Number.isFinite(num) && /^-?\d+(\.\d+)?$/.test(rawVal)) {
+        out[key] = num;
+        continue;
+      }
+      out[key] = rawVal;
+    }
+
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  private extractPossiblePathFromText(text: string): string | undefined {
+    const cleaned = String(text ?? '').trim();
+    if (!cleaned) return undefined;
+
+    const normalized = cleaned.replace(/[`"'“”‘’]/g, ' ');
+    const match =
+      normalized.match(/([A-Za-z]:[\\/][^\s]+|\.[\\/][^\s]+|[\\/][^\s]+|[^\s]+\.[a-zA-Z0-9]{1,8})/);
+    const candidate = String(match?.[1] ?? '').trim();
+    return candidate || undefined;
+  }
+
+  private buildToolUseInput(part: OpenCodeToolPart): Record<string, unknown> {
+    const state: any = part?.state ?? {};
+
+    const input = this.isPlainObject(state.input) ? { ...(state.input as Record<string, unknown>) } : {};
+    if (!this.hasMeaningfulToolInput(input)) {
+      const parsed = this.parseToolRawInput(state.raw);
+      if (parsed) Object.assign(input, parsed);
+    }
+
+    const title = typeof state.title === 'string' ? state.title.trim() : '';
+    if (title) input.title = title;
+    if (typeof state.status === 'string') input.status = state.status;
+
+    // Some tools only populate raw/title early. Best-effort path extraction for file-based tools.
+    const toolKey = String(part.tool ?? '').trim().toLowerCase();
+    const isFileTool =
+      toolKey === 'read' ||
+      toolKey === 'write' ||
+      toolKey === 'edit' ||
+      toolKey === 'multiedit' ||
+      toolKey === 'notebookedit';
+    if (isFileTool) {
+      const existingPath =
+        (typeof input.file_path === 'string' && input.file_path.trim()) ||
+        (typeof input.filePath === 'string' && input.filePath.trim()) ||
+        (typeof input.notebook_path === 'string' && input.notebook_path.trim()) ||
+        (typeof input.path === 'string' && input.path.trim())
+          ? true
+          : false;
+
+      if (!existingPath && title) {
+        const extracted = this.extractPossiblePathFromText(title);
+        if (extracted) input.file_path = extracted;
+      }
+    }
+
+    return input;
+  }
+
+  private hasMeaningfulToolInput(input: Record<string, unknown>): boolean {
+    const ignored = new Set(['title', 'status']);
+    for (const [k, v] of Object.entries(input)) {
+      if (ignored.has(k)) continue;
+      if (v == null) continue;
+      if (typeof v === 'string' && !v.trim()) continue;
+      if (Array.isArray(v) && v.length === 0) continue;
+      if (this.isPlainObject(v) && Object.keys(v).length === 0) continue;
+      return true;
+    }
+    return false;
+  }
+
   private onToolPart(state: ChannelState, part: OpenCodeToolPart): void {
     const toolUseId = part.callID || part.id;
     if (!toolUseId) return;
 
-    if (!state.sentToolUseIds.has(toolUseId)) {
+    const toolState: any = part?.state ?? {};
+    const status = String(toolState.status ?? '').trim();
+    const input = this.buildToolUseInput(part);
+    const title = typeof toolState.title === 'string' ? toolState.title.trim() : '';
+
+    const alreadySent = state.sentToolUseIds.has(toolUseId);
+    const shouldSendToolUse =
+      !alreadySent &&
+      (status === 'completed' || status === 'error' || status === 'running' || status === 'pending') &&
+      (status === 'completed' || status === 'error' || this.hasMeaningfulToolInput(input));
+
+    if (shouldSendToolUse) {
       state.sentToolUseIds.add(toolUseId);
+      this.pushProgressEvent(
+        state.channelId,
+        'tool',
+        title ? `${String(part.tool ?? 'tool')} — ${title}` : String(part.tool ?? 'tool')
+      );
       this.sendToChannel(state.channelId, {
         type: 'assistant',
         timestamp: Date.now(),
@@ -917,18 +1089,14 @@ export class OpencodeAgentService implements IOpencodeAgentService {
               type: 'tool_use',
               id: toolUseId,
               name: part.tool,
-              input: {
-                ...part.state.input,
-                title: part.state.title,
-                status: part.state.status
-              }
+              input
             }
           ]
         }
       });
     }
 
-    if (part.state.status === 'completed') {
+    if (status === 'completed') {
       this.sendToChannel(state.channelId, {
         type: 'user',
         timestamp: Date.now(),
@@ -938,7 +1106,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
             {
               type: 'tool_result',
               tool_use_id: toolUseId,
-              content: part.state.output ?? '',
+              content: toolState.output ?? '',
               is_error: false
             }
           ]
@@ -947,7 +1115,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       return;
     }
 
-    if (part.state.status === 'error') {
+    if (status === 'error') {
       this.sendToChannel(state.channelId, {
         type: 'user',
         timestamp: Date.now(),
@@ -957,7 +1125,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
             {
               type: 'tool_result',
               tool_use_id: toolUseId,
-              content: part.state.error ?? 'Tool error',
+              content: toolState.error ?? 'Tool error',
               is_error: true
             }
           ]
@@ -1020,7 +1188,17 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
 
     state.running = false;
+    this.pushProgressEvent(state.channelId, 'session', 'idle');
     this.flushPendingAssistantOutput(state);
+    if (state.pendingUsage) {
+      this.sendToChannel(state.channelId, {
+        type: 'assistant',
+        timestamp: Date.now(),
+        message: { id: state.pendingUsageMessageId ?? null, role: 'assistant', content: [], usage: state.pendingUsage }
+      });
+      state.pendingUsage = undefined;
+      state.pendingUsageMessageId = undefined;
+    }
     this.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
   }
 
@@ -1124,6 +1302,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     | DeleteSkillResponse
     | SetModelResponse
     | SetVariantResponse
+    | GetProgressResponse
     | SetPermissionModeResponse
     | SetThinkingLevelResponse
     | ListFilesResponse
@@ -1144,6 +1323,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         return this.handleInit();
       case 'get_claude_state':
         return this.handleGetClaudeState();
+      case 'get_progress':
+        return { type: 'get_progress_response', progress: this.getProgressSnapshot(message.channelId) };
       case 'get_claude_config':
         return this.handleGetClaudeConfig(req.scope, req.configType);
       case 'save_claude_config':
@@ -1532,7 +1713,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
 
     const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
-    const targetPath = this.getProjectOhMyConfigPath(cwd);
+    const targetPath =
+      (await this.readOhMyConfig(cwd).catch(() => undefined))?.path ??
+      path.join(this.getXdgConfigHome(), 'opencode', 'oh-my-opencode.json');
 
     try {
       const existing = (await this.readJsonFile(targetPath).catch(() => undefined)) ?? {};
@@ -1588,7 +1771,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
 
     const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
-    const targetPath = this.getProjectOhMyConfigPath(cwd);
+    const targetPath =
+      (await this.readOhMyConfig(cwd).catch(() => undefined))?.path ??
+      path.join(this.getXdgConfigHome(), 'opencode', 'oh-my-opencode.json');
 
     try {
       const existing = (await this.readJsonFile(targetPath).catch(() => undefined)) ?? {};
@@ -2089,7 +2274,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       this.getProjectOhMyConfigPath(cwd),
       configDir ? path.join(configDir, 'oh-my-opencode.json') : undefined,
       configDir ? path.join(configDir, 'opencode', 'oh-my-opencode.json') : undefined,
-      path.join(os.homedir(), '.config', 'opencode', 'oh-my-opencode.json')
+      path.join(this.getXdgConfigHome(), 'opencode', 'oh-my-opencode.json')
     ].filter(Boolean) as string[];
 
     for (const p of candidates) {
@@ -2355,6 +2540,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       }
 
       if (info.role === 'assistant') {
+        const usage = this.buildUsageFromTokens((info as any).tokens);
+
         // Tool parts as tool_use/tool_result
         for (const p of parts) {
           if (p?.type !== 'tool') continue;
@@ -2367,7 +2554,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
               id: info.id,
               role: 'assistant',
               content: [
-                { type: 'tool_use', id: toolUseId, name: tp.tool, input: tp.state?.input ?? {} }
+                { type: 'tool_use', id: toolUseId, name: tp.tool, input: this.buildToolUseInput(tp) }
               ]
             }
           });
@@ -2419,10 +2606,107 @@ export class OpencodeAgentService implements IOpencodeAgentService {
             message: { id: info.id, role: 'assistant', content: [{ type: 'text', text }] }
           });
         }
+
+        if (usage) {
+          events.push({
+            type: 'assistant',
+            timestamp: Number(info.time?.completed ?? info.time?.updated ?? info.time?.created ?? Date.now()),
+            message: { id: info.id, role: 'assistant', content: [], usage }
+          });
+        }
       }
     }
 
     return { type: 'get_session_response', messages: events };
+  }
+
+  private pushProgressEvent(channelId: string, type: string, summary: string): void {
+    const trimmed = String(summary ?? '').trim();
+    if (!trimmed) return;
+    const arr = this.progressEventsByChannel.get(channelId) ?? [];
+    arr.push({ ts: Date.now(), type, summary: trimmed });
+    const MAX = 50;
+    if (arr.length > MAX) {
+      arr.splice(0, arr.length - MAX);
+    }
+    this.progressEventsByChannel.set(channelId, arr);
+  }
+
+  private getEffectiveAgentName(): string | undefined {
+    const selectedAgent = (
+      this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
+    ).trim();
+    return selectedAgent || undefined;
+  }
+
+  private getEffectiveModelSetting(state?: ChannelState): string | undefined {
+    const modelSetting = (
+      state?.modelSetting ?? (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
+    ).trim();
+    return modelSetting || undefined;
+  }
+
+  private resolveProgressChannelId(channelOrSessionId?: string): string | undefined {
+    const key = String(channelOrSessionId ?? '').trim();
+    if (!key) return this.lastActiveChannelId;
+
+    if (this.channels.has(key)) return key;
+
+    for (const [channelId, state] of this.channels.entries()) {
+      if (state.sessionId === key) return channelId;
+    }
+
+    return this.lastActiveChannelId;
+  }
+
+  private getProgressSnapshot(channelOrSessionId?: string): GetProgressResponse['progress'] {
+    const cid = this.resolveProgressChannelId(channelOrSessionId);
+    if (!cid) {
+      return {
+        channelId: undefined,
+        sessionId: undefined,
+        running: false,
+        agent: undefined,
+        model: undefined,
+        lastEvents: []
+      };
+    }
+
+    const state = this.channels.get(cid);
+    return {
+      channelId: cid,
+      sessionId: state?.sessionId,
+      running: !!state?.running,
+      agent: this.getEffectiveAgentName(),
+      model: this.getEffectiveModelSetting(state),
+      lastEvents: [...(this.progressEventsByChannel.get(cid) ?? [])]
+    };
+  }
+
+  private buildUsageFromTokens(tokens: unknown): any | undefined {
+    if (!tokens || typeof tokens !== 'object') return undefined;
+    const t: any = tokens;
+    const toPositiveInt = (value: unknown): number => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.trunc(n));
+    };
+
+    const input = toPositiveInt(t.input);
+    const output = toPositiveInt(t.output);
+    const reasoning = toPositiveInt(t.reasoning);
+    const cacheRead = toPositiveInt(t.cache?.read);
+    const cacheWrite = toPositiveInt(t.cache?.write);
+
+    if (input + output + reasoning + cacheRead + cacheWrite <= 0) return undefined;
+
+    const usage: any = {
+      input_tokens: input,
+      output_tokens: output + reasoning
+    };
+    if (cacheRead) usage.cache_read_input_tokens = cacheRead;
+    if (cacheWrite) usage.cache_creation_input_tokens = cacheWrite;
+    return usage;
   }
 
   private async openFile(filePath: string, location?: any): Promise<void> {
