@@ -1294,8 +1294,20 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private mapProvidersToModels(
     providers: any[]
-  ): Array<{ value: string; displayName?: string; description?: string }> {
-    const out: Array<{ value: string; displayName?: string; description?: string }> = [];
+  ): Array<{
+    value: string;
+    displayName?: string;
+    description?: string;
+    variants?: unknown;
+    contextWindow?: number;
+  }> {
+    const out: Array<{
+      value: string;
+      displayName?: string;
+      description?: string;
+      variants?: unknown;
+      contextWindow?: number;
+    }> = [];
 
     const isPlainObject = (value: unknown): value is Record<string, any> =>
       !!value && typeof value === 'object' && !Array.isArray(value);
@@ -1318,6 +1330,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
           const name = typeof model?.name === 'string' ? model.name : '';
           const ctx = Number(model?.limit?.context);
           const outLimit = Number(model?.limit?.output);
+          const variantsRaw = isPlainObject(model?.variants) ? model.variants : undefined;
 
           const descParts: string[] = [];
           if (name && name !== modelID) descParts.push(name);
@@ -1327,7 +1340,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
           out.push({
             value,
             displayName: value,
-            description: descParts.length > 0 ? descParts.join(' · ') : providerDesc
+            description: descParts.length > 0 ? descParts.join(' · ') : providerDesc,
+            variants: variantsRaw,
+            contextWindow: Number.isFinite(ctx) && ctx > 0 ? ctx : undefined
           });
         }
         continue;
