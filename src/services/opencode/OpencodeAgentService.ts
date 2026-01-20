@@ -2554,6 +2554,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       .filter((s) => !s?.directory || String(s.directory) === cwd)
       .map((s) => ({
         id: String(s.id),
+        parentId: typeof s?.parentID === 'string' && s.parentID.trim() ? String(s.parentID) : undefined,
         lastModified: Number(s?.time?.updated ?? s?.time?.created ?? Date.now()),
         messageCount: 0,
         summary: String(s?.title ?? s?.id),
