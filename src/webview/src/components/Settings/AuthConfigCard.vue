@@ -64,6 +64,7 @@ async function openInEditor() {
   try {
     const conn = await runtime!.connectionManager.get();
     await conn.openConfigFile('auth');
+    await loadAuthPathHint();
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   }
