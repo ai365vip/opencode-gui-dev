@@ -133,6 +133,18 @@
 
     <ProgressDialog ref="progressDialogRef" :progress="progressSnapshot" />
 
+    <ModelManagementDialog
+      :is-visible="showModelDialog"
+      :current-model="session?.modelSelection.value"
+      @close="showModelDialog = false"
+      @select-model="
+        (modelId) => {
+          showModelDialog = false;
+          handleModelSelect(modelId);
+        }
+      "
+    />
+
     <!-- 权限请求模态框 -->
     <PermissionRequestModal
       v-if="pendingPermission && toolContext"
@@ -144,7 +156,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, nextTick, watch } from 'vue';
+ import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { RuntimeKey } from '../composables/runtimeContext';
 import { useSession } from '../composables/useSession';
 import { useModelManagement } from '../composables/useModelManagement';
@@ -158,10 +170,11 @@ import Spinner from '../components/Messages/WaitingIndicator.vue';
 import OpenCodeWordmark from '../components/OpenCodeWordmark.vue';
 import RandomTip from '../components/RandomTip.vue';
 import MessageRenderer from '../components/Messages/MessageRenderer.vue';
-import PermissionRequestModal from '../components/PermissionRequestModal.vue';
-import ProgressDialog from '../components/ProgressDialog.vue';
-import { useKeybinding } from '../utils/useKeybinding';
-import { useSignal } from '@gn8/alien-signals-vue';
+ import PermissionRequestModal from '../components/PermissionRequestModal.vue';
+ import ProgressDialog from '../components/ProgressDialog.vue';
+ import ModelManagementDialog from '../components/ModelManagementDialog.vue';
+ import { useKeybinding } from '../utils/useKeybinding';
+ import { useSignal } from '@gn8/alien-signals-vue';
 
 const runtime = (() => {
   const rt = inject(RuntimeKey);
@@ -302,6 +315,9 @@ const primaryAgentMode = computed<'build' | 'plan'>(() => {
 
 // Compute variants for the currently selected model
 const { availableModels } = useModelManagement();
+const showModelDialog = ref(false);
+let disposeLocalModelCommand: (() => void) | undefined;
+let disposeLocalModelsCommand: (() => void) | undefined;
 const currentModelId = computed(() => session.value?.modelSelection.value);
 const availableVariants = computed(() => {
   if (!currentModelId.value) return [];
@@ -456,9 +472,38 @@ watch(permissionRequestsLen, async () => {
 });
 
 onMounted(async () => {
+  disposeLocalModelCommand = runtime.appContext.commandRegistry.registerAction(
+    {
+      id: 'opencode-gui.ui.model.choose',
+      label: '/model',
+      description: '打开模型选择'
+    },
+    'Slash Commands',
+    () => {
+      showModelDialog.value = true;
+    }
+  );
+
+  disposeLocalModelsCommand = runtime.appContext.commandRegistry.registerAction(
+    {
+      id: 'opencode-gui.ui.model.choose.alias',
+      label: '/models',
+      description: '打开模型选择（别名）'
+    },
+    'Slash Commands',
+    () => {
+      showModelDialog.value = true;
+    }
+  );
+
   prevCount = messages.value.length;
   await nextTick();
   scrollToBottom();
+});
+
+onUnmounted(() => {
+  disposeLocalModelCommand?.();
+  disposeLocalModelsCommand?.();
 });
 
 async function createNew(): Promise<void> {
@@ -485,6 +530,15 @@ async function handleSubmit(content: string) {
   const s = session.value;
   const trimmed = (content || '').trim();
   if (!s || (!trimmed && attachments.value.length === 0)) return;
+
+  // OpenCode 的 /model 是 UI 侧命令（打开模型选择），不应发送到后端 session command
+  if (trimmed.startsWith('/')) {
+    const cmd = trimmed.slice(1).trimStart().split(/\s+/)[0]?.toLowerCase();
+    if (cmd === 'model' || cmd === 'models') {
+      showModelDialog.value = true;
+      return;
+    }
+  }
 
   const isImmediateSlashCommand = (text: string) => {
     if (!text.startsWith('/')) return false;
