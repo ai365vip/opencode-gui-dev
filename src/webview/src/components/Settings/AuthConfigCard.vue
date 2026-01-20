@@ -32,7 +32,7 @@
 </template>
 
 <script setup lang="ts">
-import { inject, ref } from 'vue';
+import { inject, onMounted, ref } from 'vue';
 import { RuntimeKey } from '../../composables/runtimeContext';
 
 const runtime = inject(RuntimeKey);
@@ -40,8 +40,24 @@ if (!runtime) {
   throw new Error('[AuthConfigCard] Runtime not provided');
 }
 
-const authPathHint = '~/.local/share/opencode/auth.json';
+const authPathHint = ref('~/.local/share/opencode/auth.json');
 const error = ref('');
+
+async function loadAuthPathHint() {
+  try {
+    const conn = await runtime!.connectionManager.get();
+    const resp = await conn.getOpencodeConfigFile('auth', 'user');
+    if (resp?.type === 'get_opencode_config_file_response' && typeof resp.path === 'string' && resp.path) {
+      authPathHint.value = resp.path;
+    }
+  } catch {
+    // ignore: keep fallback hint
+  }
+}
+
+onMounted(() => {
+  void loadAuthPathHint();
+});
 
 async function openInEditor() {
   error.value = '';

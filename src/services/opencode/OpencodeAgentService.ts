@@ -163,8 +163,6 @@ type ChannelState = {
   reasoningParts: Map<string, { messageID: string; text: string }>;
   sentToolUseIds: Set<string>;
 
-  pendingUsage?: any;
-  pendingUsageMessageId?: string;
   lastUsageMessageId?: string;
   lastUsageSignature?: string;
 
@@ -200,6 +198,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     string,
     Array<{ ts: number; type: string; summary: string }>
   >();
+  private readonly modelContextWindowById = new Map<string, number>();
 
   constructor(
     @ILogService private readonly logService: ILogService,
@@ -875,10 +874,25 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     if (info.role === 'assistant') {
       state.assistantMessageIds.add(info.id);
 
-      const usage = this.buildUsageFromTokens((info as any).tokens);
+      const infoModel = (info as any)?.model as any;
+      const providerID = String((info as any)?.providerID ?? infoModel?.providerID ?? infoModel?.providerId ?? '').trim();
+      const modelID = String((info as any)?.modelID ?? infoModel?.modelID ?? infoModel?.modelId ?? '').trim();
+      const modelValue =
+        providerID && modelID ? `${providerID}/${modelID}` : this.getEffectiveModelSetting(state);
+      const contextWindow = modelValue ? this.modelContextWindowById.get(modelValue) : undefined;
+
+      const usage = this.buildUsageFromTokens((info as any).tokens, { contextWindow });
       if (usage) {
-        state.pendingUsage = usage;
-        state.pendingUsageMessageId = info.id;
+        const signature = `${String(info.id)}:${JSON.stringify(usage)}`;
+        if (signature !== state.lastUsageSignature) {
+          state.lastUsageSignature = signature;
+          state.lastUsageMessageId = info.id;
+          this.sendToChannel(state.channelId, {
+            type: 'assistant',
+            timestamp: Number(info.time?.completed ?? info.time?.updated ?? info.time?.created ?? Date.now()),
+            message: { id: info.id, role: 'assistant', content: [], usage }
+          });
+        }
       }
     }
   }
@@ -1190,15 +1204,6 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     state.running = false;
     this.pushProgressEvent(state.channelId, 'session', 'idle');
     this.flushPendingAssistantOutput(state);
-    if (state.pendingUsage) {
-      this.sendToChannel(state.channelId, {
-        type: 'assistant',
-        timestamp: Date.now(),
-        message: { id: state.pendingUsageMessageId ?? null, role: 'assistant', content: [], usage: state.pendingUsage }
-      });
-      state.pendingUsage = undefined;
-      state.pendingUsageMessageId = undefined;
-    }
     this.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
   }
 
@@ -1484,6 +1489,15 @@ export class OpencodeAgentService implements IOpencodeAgentService {
               ? rawProviders
               : [];
         models = this.mapProvidersToModels(providersAlt);
+      }
+
+      this.modelContextWindowById.clear();
+      for (const m of models) {
+        const id = String((m as any)?.value ?? '').trim();
+        const ctx = Number((m as any)?.contextWindow);
+        if (id && Number.isFinite(ctx) && ctx > 0) {
+          this.modelContextWindowById.set(id, ctx);
+        }
       }
 
       return {
@@ -2012,11 +2026,14 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     try {
       const exists = await this.pathExists(resolved.path);
-      const content = exists
-        ? Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(resolved.path))).toString(
-            'utf8'
-          )
-        : '';
+      const content =
+        configType === 'auth'
+          ? ''
+          : exists
+            ? Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(resolved.path))).toString(
+                'utf8'
+              )
+            : '';
 
       return {
         type: 'get_opencode_config_file_response',
@@ -2237,11 +2254,11 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     const jsoncPath = path.join(dir, 'opencode.jsonc');
     const jsonPath = path.join(dir, 'opencode.json');
-    if (await this.pathExists(jsoncPath)) {
-      return { path: jsoncPath, scope: resolvedScope };
-    }
     if (await this.pathExists(jsonPath)) {
       return { path: jsonPath, scope: resolvedScope };
+    }
+    if (await this.pathExists(jsoncPath)) {
+      return { path: jsoncPath, scope: resolvedScope };
     }
     return { path: jsoncPath, scope: resolvedScope };
   }
@@ -2509,6 +2526,24 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         isCurrentWorkspace: true
       }));
 
+    const maxConcurrent = Math.min(4, mapped.length);
+    let idx = 0;
+    const worker = async () => {
+      while (true) {
+        const i = idx++;
+        if (i >= mapped.length) return;
+        const sessionId = mapped[i].id;
+        try {
+          const rawMessages = await this.client.listMessages(sessionId, cwd);
+          const items: any[] = Array.isArray(rawMessages) ? rawMessages : (rawMessages?.messages ?? []);
+          mapped[i].messageCount = Array.isArray(items) ? items.length : 0;
+        } catch {
+          mapped[i].messageCount = 0;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: maxConcurrent }, worker));
+
     return { type: 'list_sessions_response', sessions: mapped };
   }
 
@@ -2540,7 +2575,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       }
 
       if (info.role === 'assistant') {
-        const usage = this.buildUsageFromTokens((info as any).tokens);
+        const infoModel = (info as any)?.model as any;
+        const providerID = String((info as any)?.providerID ?? infoModel?.providerID ?? infoModel?.providerId ?? '').trim();
+        const modelID = String((info as any)?.modelID ?? infoModel?.modelID ?? infoModel?.modelId ?? '').trim();
+        const modelValue = providerID && modelID ? `${providerID}/${modelID}` : undefined;
+        const contextWindow = modelValue ? this.modelContextWindowById.get(modelValue) : undefined;
+        const usage = this.buildUsageFromTokens((info as any).tokens, { contextWindow });
 
         // Tool parts as tool_use/tool_result
         for (const p of parts) {
@@ -2683,7 +2723,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     };
   }
 
-  private buildUsageFromTokens(tokens: unknown): any | undefined {
+  private buildUsageFromTokens(
+    tokens: unknown,
+    opts?: { contextWindow?: number }
+  ): any | undefined {
     if (!tokens || typeof tokens !== 'object') return undefined;
     const t: any = tokens;
     const toPositiveInt = (value: unknown): number => {
@@ -2697,8 +2740,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     const reasoning = toPositiveInt(t.reasoning);
     const cacheRead = toPositiveInt(t.cache?.read);
     const cacheWrite = toPositiveInt(t.cache?.write);
+    const total = input + output + reasoning + cacheRead + cacheWrite;
 
-    if (input + output + reasoning + cacheRead + cacheWrite <= 0) return undefined;
+    if (total <= 0) return undefined;
 
     const usage: any = {
       input_tokens: input,
@@ -2706,6 +2750,11 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     };
     if (cacheRead) usage.cache_read_input_tokens = cacheRead;
     if (cacheWrite) usage.cache_creation_input_tokens = cacheWrite;
+    const ctx = Number(opts?.contextWindow);
+    if (Number.isFinite(ctx) && ctx > 0) {
+      usage.context_window = Math.trunc(ctx);
+      usage.context_percentage = Math.round((total / ctx) * 100);
+    }
     return usage;
   }
 

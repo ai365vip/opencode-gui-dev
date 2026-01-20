@@ -17,8 +17,9 @@ const STORAGE_KEY_MODEL_STATES = 'opencode-gui-model-states';
 
 function modelInfoToOption(info: ModelInfo): ModelOption {
   const variantsRaw = (info as any)?.variants;
-  const variants =
-    variantsRaw && typeof variantsRaw === 'object' && !Array.isArray(variantsRaw)
+  const variants = Array.isArray(variantsRaw)
+    ? variantsRaw.map((v: unknown) => String(v)).filter(Boolean)
+    : variantsRaw && typeof variantsRaw === 'object' && !Array.isArray(variantsRaw)
       ? Object.entries(variantsRaw)
           .filter(([, value]) => !(value && typeof value === 'object' && (value as any).disabled))
           .map(([key]) => key)

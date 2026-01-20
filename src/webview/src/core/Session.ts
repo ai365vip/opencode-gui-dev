@@ -691,10 +691,15 @@ export class Session {
       usage.output_tokens;
 
     const current = this.usageData();
+    const rawContext = Number(
+      (usage as any)?.context_window ?? (usage as any)?.contextWindow ?? (usage as any)?.limit?.context
+    );
+    const contextWindow =
+      Number.isFinite(rawContext) && rawContext > 0 ? Math.trunc(rawContext) : current.contextWindow;
     this.usageData({
       totalTokens,
       totalCost: current.totalCost,
-      contextWindow: current.contextWindow
+      contextWindow
     });
   }
 

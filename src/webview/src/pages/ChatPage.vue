@@ -416,7 +416,8 @@ const progressPercentage = computed(() => {
   const windowSize = model?.contextWindow ?? usage.contextWindow ?? 200000;
 
   if (typeof total === 'number' && total > 0) {
-    const pct = Math.round((total / windowSize) * 100);
+    const pct = (total / windowSize) * 100;
+    if (!Number.isFinite(pct)) return 0;
     return Math.max(0, Math.min(100, pct));
   }
 
