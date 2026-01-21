@@ -150,18 +150,6 @@
             </div>
 
             <div class="form-group">
-              <label class="form-label">API（可选）</label>
-              <input
-                v-model="dialog.api"
-                class="form-input"
-                placeholder="例如：https://api.openai.com/v1"
-              />
-              <div class="form-hint">
-                <code>provider.&lt;id&gt;.api</code>（用于模型 api.url 默认值）
-              </div>
-            </div>
-
-            <div class="form-group">
               <label class="form-label">baseURL（可选）</label>
               <input
                 v-model="dialog.baseURL"
@@ -194,9 +182,12 @@
               <label class="form-label">setCacheKey</label>
               <label class="checkbox-row">
                 <input type="checkbox" v-model="dialog.setCacheKey" />
-                <span>启用 promptCacheKey</span>
+                <span>启用 promptCacheKey（用于 prompt cache）</span>
               </label>
-              <div class="form-hint"><code>provider.&lt;id&gt;.options.setCacheKey</code></div>
+              <div class="form-hint">
+                <code>provider.&lt;id&gt;.options.setCacheKey</code>：向 OpenAI-compatible provider 传递
+                <code>promptCacheKey=sessionID</code>，用于提升 prompt cache 命中（默认关闭）
+              </div>
             </div>
 
             <div class="form-group">
@@ -499,7 +490,6 @@ const dialog = reactive<{
   saving: boolean;
   providerId: string;
   name: string;
-  api: string;
   baseURL: string;
   timeoutMode: 'default' | 'ms' | 'off';
   timeoutMs: string;
@@ -521,7 +511,6 @@ const dialog = reactive<{
   saving: false,
   providerId: '',
   name: '',
-  api: '',
   baseURL: '',
   timeoutMode: 'default',
   timeoutMs: '',
@@ -709,7 +698,6 @@ function openAddDialog() {
   dialog.saving = false;
   dialog.providerId = '';
   dialog.name = '';
-  dialog.api = '';
   dialog.baseURL = '';
   dialog.timeoutMode = 'default';
   dialog.timeoutMs = '';
@@ -772,7 +760,6 @@ async function openEditDialog(providerId: string) {
 
   const cfg = state.parsed?.provider?.[id] ?? {};
   dialog.name = typeof cfg?.name === 'string' ? cfg.name : '';
-  dialog.api = typeof cfg?.api === 'string' ? cfg.api : '';
   dialog.baseURL = typeof cfg?.options?.baseURL === 'string' ? cfg.options.baseURL : '';
 
   const timeout = cfg?.options?.timeout;
@@ -960,11 +947,9 @@ async function saveProviderConfig() {
     let next = state.sourceText;
 
     const name = String(dialog.name ?? '').trim();
-    const api = String(dialog.api ?? '').trim();
     const baseURL = String(dialog.baseURL ?? '').trim();
 
     next = applyModify(next, ['provider', providerId, 'name'], name ? name : undefined);
-    next = applyModify(next, ['provider', providerId, 'api'], api ? api : undefined);
     next = applyModify(
       next,
       ['provider', providerId, 'options', 'baseURL'],

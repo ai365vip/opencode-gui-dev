@@ -154,6 +154,8 @@ type ChannelState = {
 
   modelSetting?: string;
   variant?: string;
+  permissionMode?: string;
+  activeAgent?: string;
 
   running: boolean;
   sseAbort: AbortController;
@@ -225,6 +227,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
           message.cwd ?? undefined,
           message.model ?? undefined,
           message.variant ?? undefined,
+          message.permissionMode ?? undefined,
           message.initialMessage
         );
         return;
@@ -324,6 +327,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     cwd: string | undefined,
     model: string | undefined,
     variant: string | undefined,
+    permissionMode: unknown,
     initialMessage: any | undefined
   ): Promise<void> {
     const workspaceCwd =
@@ -349,6 +353,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       sessionId,
       modelSetting: typeof model === 'string' ? model.trim() || undefined : undefined,
       variant: typeof variant === 'string' ? variant.trim() || undefined : undefined,
+      permissionMode: typeof permissionMode === 'string' ? permissionMode.trim() || undefined : undefined,
+      activeAgent: this.mapPrimaryAgentFromPermissionMode(permissionMode),
       running: false,
       sseAbort: new AbortController(),
       assistantMessageIds: new Set<string>(),
@@ -465,7 +471,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
           return;
         case 'compact':
         case 'summarize':
-          await this.handleSessionCompact(state);
+          await this.handleSessionCompact(state, command as 'compact' | 'summarize');
           return;
         case 'init':
           await this.handleSessionInit(state, args);
@@ -478,9 +484,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
       ).trim();
       const variant = String(state.variant ?? '').trim();
-      const selectedAgent = (
-        this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
-      ).trim();
+      const selectedAgent = this.getEffectiveAgentName(state);
       const model = this.parseModel(modelSetting);
 
       const body: any = { command, arguments: args };
@@ -507,9 +511,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       state.modelSetting ?? (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
     ).trim();
     const variant = String(state.variant ?? '').trim();
-    const selectedAgent = (
-      this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
-    ).trim();
+    const selectedAgent = this.getEffectiveAgentName(state);
 
     const model = this.parseModel(modelSetting);
 
@@ -583,13 +585,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       }
 
       if (!target) {
-        this.sendToChannel(state.channelId, {
-          type: 'assistant',
-          timestamp: Date.now(),
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: '没有可撤销的上一条消息。' }]
-          }
+        this.sendSlashCommandResult(state, {
+          command: 'undo',
+          ok: true,
+          output: '没有可撤销的上一条消息。'
         });
         state.running = false;
         this.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
@@ -597,6 +596,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       }
 
       await this.client.revert(state.sessionId, { messageID: target }, state.cwd);
+
+      this.sendSlashCommandResult(state, {
+        command: 'undo',
+        ok: true,
+        output: '已撤销上一条消息及文件改动。'
+      });
 
       // 清空缓冲区并发送刷新事件
       state.assistantMessageIds.clear();
@@ -616,10 +621,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logService.warn(`[OpencodeAgentService] /undo failed: ${msg}`);
-      this.sendToChannel(state.channelId, {
-        type: 'assistant',
-        timestamp: Date.now(),
-        message: { role: 'assistant', content: [{ type: 'text', text: `撤销失败: ${msg}` }] }
+      this.sendSlashCommandResult(state, {
+        command: 'undo',
+        ok: false,
+        output: `撤销失败: ${msg}`
       });
       state.running = false;
       this.sendToChannel(state.channelId, {
@@ -651,13 +656,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       const revertMessageId = session?.revert?.messageID ?? session?.revertMessageID;
 
       if (!revertMessageId) {
-        this.sendToChannel(state.channelId, {
-          type: 'assistant',
-          timestamp: Date.now(),
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: '当前没有可重做的撤销记录。' }]
-          }
+        this.sendSlashCommandResult(state, {
+          command: 'redo',
+          ok: true,
+          output: '当前没有可重做的撤销记录。'
         });
         state.running = false;
         this.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
@@ -692,6 +694,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         await this.client.revert(state.sessionId, { messageID: next }, state.cwd);
       }
 
+      this.sendSlashCommandResult(state, {
+        command: 'redo',
+        ok: true,
+        output: '已重做撤销。'
+      });
+
       // 清空缓冲区并发送刷新事件
       state.assistantMessageIds.clear();
       state.textParts.clear();
@@ -710,10 +718,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logService.warn(`[OpencodeAgentService] /redo failed: ${msg}`);
-      this.sendToChannel(state.channelId, {
-        type: 'assistant',
-        timestamp: Date.now(),
-        message: { role: 'assistant', content: [{ type: 'text', text: `重做失败: ${msg}` }] }
+      this.sendSlashCommandResult(state, {
+        command: 'redo',
+        ok: false,
+        output: `重做失败: ${msg}`
       });
       state.running = false;
       this.sendToChannel(state.channelId, {
@@ -725,7 +733,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     }
   }
 
-  private async handleSessionCompact(state: ChannelState): Promise<void> {
+  private async handleSessionCompact(
+    state: ChannelState,
+    commandName: 'compact' | 'summarize'
+  ): Promise<void> {
     state.running = true;
     this.pushProgressEvent(state.channelId, 'session', 'running');
     this.sendToChannel(state.channelId, {
@@ -742,13 +753,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       const model = this.parseModel(modelSetting);
 
       if (!model) {
-        this.sendToChannel(state.channelId, {
-          type: 'assistant',
-          timestamp: Date.now(),
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: '请先在顶部选择用于压缩的模型（provider/model）。' }]
-          }
+        this.sendSlashCommandResult(state, {
+          command: commandName,
+          ok: false,
+          output: '请先在顶部选择用于压缩的模型（provider/model）。'
         });
         state.running = false;
         this.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
@@ -761,14 +769,20 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         state.cwd
       );
 
+      this.sendSlashCommandResult(state, {
+        command: commandName,
+        ok: true,
+        output: '已开始压缩/总结，会在完成后输出总结内容。'
+      });
+
       // summarize 是异步的，输出通过 SSE 返回，session.idle 时结束
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logService.warn(`[OpencodeAgentService] /compact failed: ${msg}`);
-      this.sendToChannel(state.channelId, {
-        type: 'assistant',
-        timestamp: Date.now(),
-        message: { role: 'assistant', content: [{ type: 'text', text: `压缩失败: ${msg}` }] }
+      this.sendSlashCommandResult(state, {
+        command: commandName,
+        ok: false,
+        output: `压缩失败: ${msg}`
       });
       state.running = false;
       this.sendToChannel(state.channelId, {
@@ -792,14 +806,21 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     try {
       await this.client.init(state.sessionId, { arguments: args }, state.cwd);
+      this.sendSlashCommandResult(state, {
+        command: 'init',
+        args,
+        ok: true,
+        output: '已开始初始化，会在完成后输出结果。'
+      });
       // init 是异步的，输出通过 SSE 返回
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logService.warn(`[OpencodeAgentService] /init failed: ${msg}`);
-      this.sendToChannel(state.channelId, {
-        type: 'assistant',
-        timestamp: Date.now(),
-        message: { role: 'assistant', content: [{ type: 'text', text: `初始化失败: ${msg}` }] }
+      this.sendSlashCommandResult(state, {
+        command: 'init',
+        args,
+        ok: false,
+        output: `初始化失败: ${msg}`
       });
       state.running = false;
       this.sendToChannel(state.channelId, {
@@ -1381,6 +1402,13 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         return { type: 'set_work_mode_response', success: true };
 
       case 'set_permission_mode':
+        if (typeof message.channelId === 'string') {
+          const state = this.channels.get(message.channelId);
+          if (state) {
+            state.permissionMode = typeof req.mode === 'string' ? req.mode.trim() || undefined : undefined;
+            state.activeAgent = this.mapPrimaryAgentFromPermissionMode(state.permissionMode);
+          }
+        }
         return { type: 'set_permission_mode_response', success: true };
 
       case 'set_thinking_level':
@@ -1472,11 +1500,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     // WebView 侧需要一个 config 对象来初始化模型/Slash Commands。
     // OpenCode 不提供单独的 `/model`；模型来自 `/config/providers` / `/provider` 返回的 Provider.models。
     const cwd = this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
-
+    let models: Array<{ value: string; displayName?: string; description?: string; variants?: unknown; contextWindow?: number }> =
+      [];
     try {
       const raw = await this.client.listConfigProviders(cwd);
       const providers: any[] = Array.isArray(raw?.providers) ? raw.providers : [];
-      let models = this.mapProvidersToModels(providers);
+      models = this.mapProvidersToModels(providers);
 
       // Fallback: some versions may only expose models via `/provider`.
       if (models.length === 0) {
@@ -1490,33 +1519,73 @@ export class OpencodeAgentService implements IOpencodeAgentService {
               : [];
         models = this.mapProvidersToModels(providersAlt);
       }
-
-      this.modelContextWindowById.clear();
-      for (const m of models) {
-        const id = String((m as any)?.value ?? '').trim();
-        const ctx = Number((m as any)?.contextWindow);
-        if (id && Number.isFinite(ctx) && ctx > 0) {
-          this.modelContextWindowById.set(id, ctx);
-        }
-      }
-
-      return {
-        type: 'get_claude_state_response',
-        config: {
-          models,
-          slashCommands: []
-        }
-      };
     } catch (error) {
       this.logService.warn(`[OpencodeAgentService] Failed to load providers: ${String(error)}`);
-      return {
-        type: 'get_claude_state_response',
-        config: {
-          models: [],
-          slashCommands: []
-        }
-      };
     }
+
+    this.modelContextWindowById.clear();
+    for (const m of models) {
+      const id = String((m as any)?.value ?? '').trim();
+      const ctx = Number((m as any)?.contextWindow);
+      if (id && Number.isFinite(ctx) && ctx > 0) {
+        this.modelContextWindowById.set(id, ctx);
+      }
+    }
+
+    let slashCommands: Array<{ name: string; description?: string }> = [];
+    try {
+      const raw = await this.client.listCommands(cwd);
+      const items: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.commands) ? raw.commands : [];
+      const seen = new Set<string>();
+      const out: Array<{ name: string; description?: string }> = [];
+      for (const c of items) {
+        const name = String(c?.name ?? '').trim();
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        out.push({
+          name,
+          description: typeof c?.description === 'string' ? c.description : undefined
+        });
+      }
+      slashCommands = out;
+    } catch (error) {
+      this.logService.warn(`[OpencodeAgentService] Failed to load commands: ${String(error)}`);
+    }
+
+    // OpenCode 的一部分“会话级命令”并不在 `/command` 列表里（例如 undo/redo/compact）。
+    // 这里补齐给前端用于 `/` 补全与快捷触发（实际执行逻辑在 sendPrompt 内处理）。
+    slashCommands = this.mergeSlashCommands(slashCommands, [
+      { name: 'undo', description: '撤销上一条消息及文件改动' },
+      { name: 'redo', description: '重做上一次撤销' },
+      { name: 'compact', description: '压缩/总结当前会话（减少上下文占用）' },
+      { name: 'summarize', description: '总结当前会话（compact 别名）' }
+    ]);
+
+    return {
+      type: 'get_claude_state_response',
+      config: {
+        models,
+        slashCommands
+      }
+    };
+  }
+
+  private mergeSlashCommands(
+    existing: Array<{ name: string; description?: string }>,
+    extra: Array<{ name: string; description?: string }>
+  ): Array<{ name: string; description?: string }> {
+    const map = new Map<string, { name: string; description?: string }>();
+    for (const item of existing ?? []) {
+      const name = String(item?.name ?? '').trim();
+      if (!name || map.has(name)) continue;
+      map.set(name, { name, description: item?.description });
+    }
+    for (const item of extra ?? []) {
+      const name = String(item?.name ?? '').trim();
+      if (!name || map.has(name)) continue;
+      map.set(name, { name, description: item?.description });
+    }
+    return Array.from(map.values());
   }
 
   private mapProvidersToModels(
@@ -2202,22 +2271,12 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   private getXdgConfigHome(): string {
     const env = String(process.env.XDG_CONFIG_HOME ?? '').trim();
     if (env) return env;
-    if (process.platform === 'win32') {
-      const appData = String(process.env.APPDATA ?? '').trim();
-      if (appData) return appData;
-      return path.join(os.homedir(), 'AppData', 'Roaming');
-    }
     return path.join(os.homedir(), '.config');
   }
 
   private getXdgDataHome(): string {
     const env = String(process.env.XDG_DATA_HOME ?? '').trim();
     if (env) return env;
-    if (process.platform === 'win32') {
-      const localAppData = String(process.env.LOCALAPPDATA ?? '').trim();
-      if (localAppData) return localAppData;
-      return path.join(os.homedir(), 'AppData', 'Local');
-    }
     return path.join(os.homedir(), '.local', 'share');
   }
 
@@ -2708,7 +2767,14 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     this.progressEventsByChannel.set(channelId, arr);
   }
 
-  private getEffectiveAgentName(): string | undefined {
+  private mapPrimaryAgentFromPermissionMode(mode: unknown): string | undefined {
+    const value = String(mode ?? '').trim().toLowerCase();
+    return value === 'plan' ? 'plan' : 'build';
+  }
+
+  private getEffectiveAgentName(state?: ChannelState): string | undefined {
+    const stateAgent = String(state?.activeAgent ?? '').trim();
+    if (stateAgent) return stateAgent;
     const selectedAgent = (
       this.configService.getValue<string>('opencodeGui.selectedAgent', '') ?? ''
     ).trim();
@@ -2753,7 +2819,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       channelId: cid,
       sessionId: state?.sessionId,
       running: !!state?.running,
-      agent: this.getEffectiveAgentName(),
+      agent: this.getEffectiveAgentName(state),
       model: this.getEffectiveModelSetting(state),
       lastEvents: [...(this.progressEventsByChannel.get(cid) ?? [])]
     };
@@ -2816,5 +2882,38 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
   private sendToChannel(channelId: string, event: any): void {
     this.transport?.send({ type: 'io_message', channelId, message: event, done: false });
+  }
+
+  private sanitizeLocalCommandText(text: string): string {
+    const value = String(text ?? '');
+    return value
+      .replaceAll('<local-command-stdout>', '<local-command-stdout >')
+      .replaceAll('</local-command-stdout>', '</local-command-stdout >')
+      .replaceAll('<local-command-stderr>', '<local-command-stderr >')
+      .replaceAll('</local-command-stderr>', '</local-command-stderr >');
+  }
+
+  private sendSlashCommandResult(
+    state: ChannelState,
+    opts: { command: string; args?: string; ok: boolean; output: string }
+  ): void {
+    const command = String(opts.command ?? '').trim();
+    if (!command) return;
+
+    const args = String(opts.args ?? '').trim();
+    const cmdLine = `/${command}${args ? ` ${args}` : ''}`.trim();
+    const body = [cmdLine, String(opts.output ?? '').trim()].filter(Boolean).join('\n');
+    const safeBody = this.sanitizeLocalCommandText(body);
+    const tag = opts.ok ? 'local-command-stdout' : 'local-command-stderr';
+    const text = `<${tag}>${safeBody}</${tag}>`;
+
+    this.sendToChannel(state.channelId, {
+      type: 'user',
+      timestamp: Date.now(),
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text }]
+      }
+    });
   }
 }

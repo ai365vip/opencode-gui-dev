@@ -188,6 +188,10 @@ export class Session {
     const sessionId = this.sessionId();
     if (!sessionId) return;
 
+    // 会话刷新（如 /undo、/redo）会从服务端重载消息并覆盖本地数组。
+    // 保留本地渲染的命令执行结果（不属于 OpenCode session 历史）。
+    const preservedLocalMessages = this.messages().filter((m) => m.type === 'slash_command_result');
+
     this.isLoading(true);
     try {
       const connection = await this.getConnection();
@@ -197,7 +201,9 @@ export class Session {
         this.processMessage(raw);
         processAndAttachMessage(accumulator, raw);
       }
-      this.messages(accumulator);
+      const preservedAfterFetch = this.messages().filter((m) => m.type === 'slash_command_result');
+      const preserved = Array.from(new Set([...preservedLocalMessages, ...preservedAfterFetch]));
+      this.messages([...accumulator, ...preserved]);
 
       await this.launchClaude();
     } finally {
