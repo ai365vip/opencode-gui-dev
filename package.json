@@ -3,7 +3,7 @@
   "displayName": "OpenCode GUI",
   "description": "在 VSCode 中使用 OpenCode 的图形界面（WebView），自动拉起本地 opencode server。",
   "version": "0.0.1",
-  "publisher": "Haleclipse",
+  "publisher": "Ai365vip",
   "repository": {
     "type": "git",
     "url": "https://github.com/ai365vip/opencode-gui-dev.git"
