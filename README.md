@@ -82,4 +82,4 @@ AGPL-3.0
 
 ## Credits
 
-The chat UI is adapted from Claudix / Claude Code UI, with a protocol-compat translation layer on the extension side.
+The chat UI is adapted from [Claudix](https://github.com/Haleclipse/Claudix) / Claude Code UI, with a protocol-compat translation layer on the extension side.

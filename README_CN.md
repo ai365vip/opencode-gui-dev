@@ -88,4 +88,4 @@ AGPL-3.0
 
 ## 致谢
 
-聊天 UI 复用了 Claudix / Claude Code UI，并在扩展侧增加了协议兼容/事件流翻译层。
+聊天 UI 复用了 [Claudix](https://github.com/Haleclipse/Claudix) / Claude Code UI，并在扩展侧增加了协议兼容/事件流翻译层。
