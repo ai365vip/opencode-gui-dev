@@ -54,12 +54,26 @@ jobs:
       - name: Package VSIX
         run: pnpm run package
 
-      - name: Find VSIX file
+      - name: Rename VSIX with timestamp
         id: find-vsix
         run: |
-          VSIX_FILE=$(ls *.vsix | head -n 1)
-          echo "vsix_file=$VSIX_FILE" >> $GITHUB_OUTPUT
-          echo "Found VSIX file: $VSIX_FILE"
+          # Get the original VSIX file
+          ORIGINAL_VSIX=$(ls *.vsix | head -n 1)
+
+          # Extract version from package.json
+          VERSION=$(node -p "require('./package.json').version")
+
+          # Generate timestamp
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%S-%3NZ")
+
+          # Create new filename
+          NEW_VSIX="opencode-gui-vscode-${VERSION}-${TIMESTAMP}.vsix"
+
+          # Rename file
+          mv "$ORIGINAL_VSIX" "$NEW_VSIX"
+
+          echo "vsix_file=$NEW_VSIX" >> $GITHUB_OUTPUT
+          echo "Renamed VSIX file to: $NEW_VSIX"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4

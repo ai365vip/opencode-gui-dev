@@ -130,7 +130,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:webview": "vue-tsc -p src/webview/tsconfig.json --noEmit",
     "typecheck:all": "pnpm run typecheck && pnpm run typecheck:webview",
-    "package": "node scripts/package-vsix.js",
+    "package": "vsce package --no-dependencies --allow-missing-repository",
+    "package:local": "node scripts/package-vsix.js",
     "lint": "eslint src --ext ts",
     "lint:fix": "eslint src --ext ts --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,vue}\" && eslint src --ext ts,tsx,vue --fix"
