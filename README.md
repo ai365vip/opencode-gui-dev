@@ -1,39 +1,85 @@
-# OpenCode GUI（VSCode 扩展）
+﻿# OpenCode GUI (VS Code Extension)
 
-在 VSCode 里提供 OpenCode 的 WebView GUI：自动拉起本地 `opencode server`，并复用 Claudix 的聊天 UI（协议/渲染尽量不动，主要在扩展侧做协议翻译）。
+[中文说明](README_CN.md)
 
-## 快速开始（调试）
+Use OpenCode inside VS Code with a WebView chat UI. This extension connects to an OpenCode server (`opencode serve`) over HTTP/SSE, translates the event stream into the UI protocol, and renders it in the sidebar.
 
-1. 安装依赖（首次需要）：`pnpm -C opencode-gui install`
-2. 开发模式（推荐，WebView 走 Vite）：
-   - 终端运行：`pnpm -C opencode-gui dev`
-   - 用 VSCode 打开目录：`opencode-gui/`
-   - 按 `F5` 选择：`OpenCode GUI: Run Dev (Vite)`
-3. 在弹出的 `Extension Development Host` 窗口里：点击 Activity Bar 的 `OpenCode` 图标打开侧边栏对话。
+![OpenCode logo](resources/opencode-logo.png)
 
-## 生产模式调试（不走 Vite）
+## Features
 
-- 构建：`pnpm -C opencode-gui build`
-- VSCode 打开 `opencode-gui/` 后按 `F5` 选择：`OpenCode GUI: Run (Extension Host)`
+- Sidebar chat UI powered by OpenCode
+- Reuse an existing local server, or auto-start `opencode serve` (local base URL only)
+- Stream tool calls and results
+- Send editor context quickly (`Ctrl+L` / `Cmd+L`, Explorer context menu)
+- One-click revert for the latest OpenCode change
+- Settings UI for common OpenCode config files (including `oh-my-opencode`)
 
-## 常见问题（调试）
+> Note: This project is in active development and may change frequently.
 
-- 选择 `OpenCode GUI: Run Dev (Vite)` 后 WebView 空白：
-  - 先跑：`pnpm -C opencode-gui dev:webview`（或直接 `pnpm -C opencode-gui dev`）
-  - 确认本机能访问：`http://localhost:5174`
-- 选择 `OpenCode GUI: Run (Extension Host)` 后界面没有更新：
-  - 先跑：`pnpm -C opencode-gui build`（或 `pnpm -C opencode-gui watch` 持续构建）
+## Requirements
 
-## 运行前检查
+- VS Code `>= 1.98`
+- OpenCode CLI available in `PATH` (`opencode --version`)
+- For development: Node.js `>= 18` and `pnpm`
 
-- 系统里要能执行 `opencode`：`opencode --version`
-  - 找不到命令时：在 VSCode 设置里改 `opencodeGui.opencodePath`
-- 默认服务地址：`opencodeGui.serverBaseUrl`（默认 `http://127.0.0.1:4096`）
-- oh-my-opencode profile：可用 `opencodeGui.configDir` 指向对应配置目录
+OpenCode install instructions: https://opencode.ai/docs
 
-## 使用提示
+## Install (from source)
 
-- 对话框 Slash Commands 支持会话级命令：`/undo`、`/redo`、`/compact`（`/summarize` 为别名）；其中 `/compact` 需要先在顶部选择模型（`provider/model`）。
-- 设置页 “OpenCode 配置” 支持表单化编辑（模型/Provider/Plugins/Compaction），并可在编辑器打开 `opencode.json/opencode.jsonc`、`oh-my-opencode.json`、`auth.json`（`auth.json` 含密钥请勿泄露）。
+1. Install deps: `pnpm install`
+2. Build: `pnpm build`
+3. Package: `pnpm package` (generates a `.vsix` in the repo root)
+4. In VS Code: Extensions → “Install from VSIX…”
 
-更多开发细节见：`opencode-gui/docs/OPENCODE_GUI_DEV.md`。
+## Usage
+
+- Open the **OpenCode** icon in the Activity Bar to show the sidebar.
+- Pick a model, then start chatting.
+- Add context from VS Code:
+  - `Ctrl+L` / `Cmd+L`: send current selection (plus file reference)
+  - Explorer context menu: “添加到 OpenCode”
+- Optional: run “OpenCode: 一键 Revert 最近改动” to revert the latest change.
+
+## Configuration
+
+### VS Code settings
+
+- `opencodeGui.opencodePath`: path to the `opencode` executable
+- `opencodeGui.serverBaseUrl`: default `http://127.0.0.1:4096`  
+  If you set a non-local base URL, the extension will only connect (it won’t auto-start a server).
+- `opencodeGui.selectedModel`: default model (`provider/model`)
+- `opencodeGui.selectedAgent`: default agent name
+- `opencodeGui.configDir`: pass `OPENCODE_CONFIG_DIR` when starting the server (useful for oh-my-opencode profiles)
+
+### OpenCode config files
+
+OpenCode supports **JSON** and **JSONC** (JSON with comments). Typical locations:
+
+- Project: `<workspace>/.opencode/opencode.jsonc` (or `.json`)
+- Project (oh-my-opencode): `<workspace>/.opencode/oh-my-opencode.json`
+- User config (macOS/Linux): `~/.config/opencode/opencode.jsonc` (or `.json`)
+- User config (oh-my-opencode): `~/.config/opencode/oh-my-opencode.json`
+- Credentials: `~/.local/share/opencode/auth.json`
+
+On Windows, these locations follow the OS equivalents of the XDG folders (commonly `%APPDATA%\\opencode` for config and `%LOCALAPPDATA%\\opencode` for data), unless you override with `XDG_CONFIG_HOME` / `XDG_DATA_HOME`.
+
+Security: `auth.json` contains API keys/tokens. Do not paste it into issues or screenshots.
+
+## Development
+
+- `pnpm dev`: run Vite (WebView) + watch extension build
+- In VS Code press `F5` and choose:
+  - `OpenCode GUI: Run Dev (Vite)` (recommended)
+  - `OpenCode GUI: Run (Extension Host)` (production-like)
+- `pnpm typecheck:all`, `pnpm test`
+
+More details: `docs/OPENCODE_GUI_DEV.md`
+
+## License
+
+AGPL-3.0
+
+## Credits
+
+The chat UI is adapted from Claudix / Claude Code UI, with a protocol-compat translation layer on the extension side.
