@@ -46,15 +46,15 @@ const opencodeLogoSrc = computed(() => {
 const tips = computed(() => {
   const platformKey = props.platform === 'windows' ? 'Alt' : 'Option';
   return [
-    'What to do first? Ask about this codebase or we can start writing code.',
-    "Ready to code?\nLet's write something worth deploying.",
-    'Use the model dropdown to pick the right tool for the job.',
-    'Create an AGENTS.md file so OpenCode can follow your project instructions every time.',
-    'Tired of repeating yourself? Put your guidelines in AGENTS.md so OpenCode can reuse them.',
-    `Highlight text and press ${platformKey} + K to chat about it.`,
-    "One person's slop is another one's treasure.",
-    "It's a beautiful day to use the computer, don't you think?",
-    "You've come to the absolutely right place!",
+    '从哪里开始？可以询问关于代码库的问题，或者直接开始编写代码。',
+    '准备好编码了吗？\n让我们写点值得部署的东西。',
+    '使用顶部的模型下拉菜单选择合适的工具。',
+    '创建 AGENTS.md 文件，让 OpenCode 每次都能遵循您的项目指南。',
+    '厌倦了重复自己？将指南放在 AGENTS.md 中，OpenCode 可以重复使用。',
+    `选中文本并按 ${platformKey} + K 进行对话。`,
+    '一个人的垃圾是另一个人的宝藏。',
+    '今天是使用电脑的好日子，不是吗？',
+    '您来对地方了！',
     '在设置里配置 MCP 服务器。\n终端和这里共用同一份配置。'
   ];
 });
