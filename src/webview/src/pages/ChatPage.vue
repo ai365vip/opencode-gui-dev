@@ -59,14 +59,9 @@
       >
         <template v-if="messages.length === 0">
           <div v-if="isBusy" class="emptyState">
-            <div class="emptyWordmark">
-              <OpenCodeWordmark class="emptyWordmarkSvg" />
-            </div>
+            <Spinner />
           </div>
           <div v-else class="emptyState">
-            <div class="emptyWordmark">
-              <OpenCodeWordmark class="emptyWordmarkSvg" />
-            </div>
             <RandomTip :platform="platform" />
           </div>
         </template>
@@ -167,7 +162,6 @@ import type { AttachmentItem } from '../types/attachment';
 import { convertFileToAttachment } from '../types/attachment';
 import ChatInputBox from '../components/ChatInputBox.vue';
 import Spinner from '../components/Messages/WaitingIndicator.vue';
-import OpenCodeWordmark from '../components/OpenCodeWordmark.vue';
 import RandomTip from '../components/RandomTip.vue';
 import MessageRenderer from '../components/Messages/MessageRenderer.vue';
  import PermissionRequestModal from '../components/PermissionRequestModal.vue';
@@ -969,12 +963,5 @@ async function handleSendQueuedMessageNow(id: string) {
 
 .show-all-btn:hover {
   background: var(--vscode-button-hoverBackground);
-}
-
-.emptyWordmark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 24px;
 }
 </style>
