@@ -4,7 +4,7 @@
 
 Use OpenCode inside VS Code with a WebView chat UI. This extension connects to an OpenCode server (`opencode serve`) over HTTP/SSE, translates the event stream into the UI protocol, and renders it in the sidebar.
 
-![OpenCode logo](resources/opencode-logo.png)
+<img src="resources/opencode-logo.png" alt="OpenCode logo" width="200" />
 
 ## Features
 
