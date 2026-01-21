@@ -14,8 +14,6 @@ _temp_opencode/
 # Documentation
 docs/
 
-# Scripts
-scripts/
 
 # Editor config
 .vscode/
