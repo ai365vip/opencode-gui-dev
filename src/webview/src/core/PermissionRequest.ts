@@ -1,4 +1,4 @@
-import type { PermissionUpdate, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionUpdate, PermissionResult } from '@opencode-gui/ui-types';
 import { EventEmitter } from '../utils/events';
 
 export class PermissionRequest {

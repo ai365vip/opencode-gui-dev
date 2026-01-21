@@ -1,4 +1,4 @@
-declare module '@anthropic-ai/claude-agent-sdk' {
+declare module '@opencode-gui/ui-types' {
   export type PermissionMode =
     | 'default'
     | 'bypassPermissions'

@@ -40,7 +40,7 @@ async function main() {
     outfile: 'dist/extension.cjs',
 		external: [
 			'vscode'
-			// 移除 @anthropic-ai/claude-agent-sdk，让 esbuild 打包以解决 ESM/CJS 兼容问题
+			// UI 类型定义在 webview 中，extension 不需要打包
 		],
 		logLevel: 'silent',
 		plugins: [

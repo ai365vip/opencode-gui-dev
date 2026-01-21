@@ -128,7 +128,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useClaudeConfig } from '../../composables/useClaudeConfig'
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import type { PermissionMode } from '@opencode-gui/ui-types'
 
 // 内置工具列表
 const BUILTIN_TOOLS = [

@@ -3,7 +3,7 @@ import type { BaseTransport } from '../transport/BaseTransport';
 import type { PermissionRequest } from './PermissionRequest';
 import type { ModelOption } from '../../../shared/messages';
 import type { SessionSummary } from './types';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode } from '@opencode-gui/ui-types';
 import { processAndAttachMessage } from '../utils/messageUtils';
 import { Message as MessageModel } from '../models/Message';
 import type { Message } from '../models/Message';

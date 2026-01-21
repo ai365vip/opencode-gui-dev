@@ -18,7 +18,7 @@
 import { computed } from 'vue';
 import type { ComputedRef, Ref } from 'vue';
 import { useSignal } from '@gn8/alien-signals-vue';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode } from '@opencode-gui/ui-types';
 import type { Session, SelectionRange } from '../core/Session';
 import type { PermissionRequest } from '../core/PermissionRequest';
 import type { BaseTransport } from '../transport/BaseTransport';

@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue';
-import type { ModelInfo } from '@anthropic-ai/claude-agent-sdk';
+import type { ModelInfo } from '@opencode-gui/ui-types';
 
 export interface ModelOption {
   id: string;

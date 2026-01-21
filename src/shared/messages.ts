@@ -4,14 +4,14 @@
  * 双端通信协议：Extension ↔ WebView
  */
 
-// 导入 SDK 类型
+// 导入 UI 类型
 import type {
   SDKMessage,
   SDKUserMessage,
   PermissionResult,
   PermissionUpdate,
   PermissionMode
-} from '@anthropic-ai/claude-agent-sdk';
+} from '@opencode-gui/ui-types';
 
 // ============================================================================
 // 基础消息类型

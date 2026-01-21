@@ -7,7 +7,7 @@
 
 <script setup lang="ts">
   import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-  import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+  import type { PermissionMode } from '@opencode-gui/ui-types';
 
   interface Props {
     size?: number;

@@ -2,7 +2,7 @@ import { signal } from 'alien-signals';
 import { AsyncQueue } from './AsyncQueue';
 import { EventEmitter } from '../utils/events';
 import { PermissionRequest } from '../core/PermissionRequest';
-import type { PermissionResult, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionResult, PermissionMode } from '@opencode-gui/ui-types';
 import type {
   ExtensionRequestResponse,
   ExtensionToWebViewMessage,
