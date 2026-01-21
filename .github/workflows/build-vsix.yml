@@ -82,6 +82,51 @@ jobs:
           path: ${{ steps.find-vsix.outputs.vsix_file }}
           retention-days: 30
 
+      - name: Check if version tag exists
+        id: check-tag
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+
+          # Check if tag exists locally or remotely
+          if git rev-parse "$TAG" >/dev/null 2>&1 || git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Tag $TAG does not exist"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create Release (auto)
+        if: |
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/master' &&
+          steps.check-tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.check-tag.outputs.tag }}
+          name: Release ${{ steps.check-tag.outputs.tag }}
+          files: ${{ steps.find-vsix.outputs.vsix_file }}
+          draft: false
+          prerelease: false
+          body: |
+            ## OpenCode GUI v${{ steps.check-tag.outputs.version }}
+
+            自动构建的版本发布。
+
+            ### 安装方法
+            1. 下载 `.vsix` 文件
+            2. 在 VS Code 中：扩展 → "从 VSIX 安装..."
+            3. 选择下载的文件
+
+            ### 更新日志
+            查看提交历史了解详细更新内容。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
