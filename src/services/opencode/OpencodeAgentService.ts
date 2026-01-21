@@ -2584,6 +2584,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         light: path.join('resources', 'clawd.svg'),
         dark: path.join('resources', 'clawd.svg')
       },
+      'opencode-logo': {
+        light: path.join('resources', 'opencode-logo.png'),
+        dark: path.join('resources', 'opencode-logo.png')
+      },
       'welcome-art': {
         light: path.join('resources', 'welcome-art-light.svg'),
         dark: path.join('resources', 'welcome-art-dark.svg')

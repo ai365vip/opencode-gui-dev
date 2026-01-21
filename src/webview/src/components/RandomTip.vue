@@ -1,19 +1,47 @@
 <template>
   <div class="empty-state-content">
-    <OpenCodeIcon class="empty-mascot" />
+    <img
+      v-if="opencodeLogoSrc"
+      class="empty-mascot"
+      :src="opencodeLogoSrc"
+      alt="OpenCode"
+      draggable="false"
+    />
+    <OpenCodeIcon v-else class="empty-mascot" />
     <p class="empty-state-message">{{ currentTip }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, inject } from 'vue';
+import { useSignal } from '@gn8/alien-signals-vue';
 import OpenCodeIcon from './OpenCodeIcon.vue';
+import { RuntimeKey } from '../composables/runtimeContext';
 
 interface Props {
   platform: string;
 }
 
 const props = defineProps<Props>();
+
+const runtime = inject(RuntimeKey);
+if (!runtime) {
+  throw new Error('[RandomTip] Runtime not provided');
+}
+
+const assetUris = useSignal(runtime.appContext.assetUris);
+
+const opencodeLogoSrc = computed(() => {
+  const assets = assetUris.value;
+  if (!assets) return '';
+  const logo = assets['opencode-logo'];
+  if (!logo) return '';
+
+  const root = document.documentElement;
+  const isLight =
+    root.classList.contains('vscode-light') || root.classList.contains('vscode-high-contrast-light');
+  return isLight ? logo.light : logo.dark;
+});
 
 const tips = computed(() => {
   const platformKey = props.platform === 'windows' ? 'Alt' : 'Option';
@@ -27,7 +55,7 @@ const tips = computed(() => {
     "One person's slop is another one's treasure.",
     "It's a beautiful day to use the computer, don't you think?",
     "You've come to the absolutely right place!",
-    "Use OpenCode in the terminal to configure MCP servers.\nThey'll work here, too!"
+    '在设置里配置 MCP 服务器。\n终端和这里共用同一份配置。'
   ];
 });
 
@@ -50,8 +78,11 @@ onMounted(() => {
 }
 
 .empty-mascot {
-  width: 47px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-panel-border) 85%, transparent);
 }
 
 .empty-state-message {

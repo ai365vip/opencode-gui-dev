@@ -63,24 +63,6 @@
 
     <div v-else class="form">
       <div class="section">
-        <div class="section-title">Hooks</div>
-        <div v-if="hookCatalog.length > 0" class="hook-list">
-          <label v-for="h in hookCatalog" :key="h.id" class="hook-item">
-            <input
-              type="checkbox"
-              :checked="!disabledHooksSet.has(h.id)"
-              @change="setHookEnabled(h.id, ($event.target as HTMLInputElement).checked)"
-            />
-            <div class="hook-body">
-              <code class="hook-id">{{ h.id }}</code>
-              <div class="hook-desc">{{ h.description }}</div>
-            </div>
-          </label>
-        </div>
-        <div v-else class="empty-hint">未获取到 hooks 列表（可先启动 OpenCode server 再重载）。</div>
-      </div>
-
-      <div class="section">
         <div class="section-title">Agents</div>
         <div v-if="agentsUnsupported" class="empty-hint">
           当前 <code>agents</code> 字段不是对象，GUI 暂不支持表单编辑；请在编辑器打开修复或手动维护。
@@ -99,8 +81,54 @@
 
           <div v-if="agents.length > 0" class="agent-list">
             <div v-for="a in agents" :key="a.name" class="agent-item">
-              <code class="agent-name">{{ a.name }}</code>
-              <div class="agent-controls">
+              <div class="agent-head">
+                <code class="agent-name" :title="a.name">{{ a.name }}</code>
+                <button class="btn danger" type="button" @click="removeAgent(a.name)">移除</button>
+              </div>
+
+              <div class="agent-row agent-row-model">
+                <span class="agent-control-label agent-control-label-fixed">model</span>
+                <div class="agent-model-row">
+                  <input
+                    v-model="a.model"
+                    type="text"
+                    class="form-input form-input-compact"
+                    placeholder="默认（留空）"
+                  />
+                  <DropdownTrigger
+                    align="right"
+                    :close-on-click-outside="true"
+                    :disabled="enabledModels.length === 0"
+                    :show-search="true"
+                    search-placeholder="搜索模型..."
+                    :width="420"
+                    :popover-style="{ maxWidth: '520px' }"
+                  >
+                    <template #trigger>
+                      <button class="btn" type="button" :disabled="enabledModels.length === 0">选择</button>
+                    </template>
+                    <template #content="slotProps">
+                      <DropdownItem
+                        v-for="(m, idx) in filterModelsBySearch(String(slotProps.searchTerm ?? ''))"
+                        :key="m.value"
+                        :item="{
+                          id: m.value,
+                          label: m.label,
+                          detail: m.description,
+                          checked: a.model === m.value,
+                          type: 'model'
+                        }"
+                        :is-selected="a.model === m.value"
+                        :index="idx"
+                        @click="() => selectAgentModel(a, m.value, slotProps.close)"
+                      />
+                    </template>
+                  </DropdownTrigger>
+                  <button class="btn" type="button" :disabled="!a.model" @click="a.model = ''">清除</button>
+                </div>
+              </div>
+
+              <div class="agent-row agent-row-flags">
                 <label class="agent-control">
                   <span class="agent-control-label">enabled</span>
                   <select v-model="a.enabled" class="form-select form-select-compact">
@@ -118,15 +146,32 @@
                   </select>
                 </label>
               </div>
-              <button class="btn danger" type="button" @click="removeAgent(a.name)">移除</button>
             </div>
           </div>
           <div v-else class="empty-hint">未配置 agents（可在上方添加）。</div>
         </div>
       </div>
 
+      <div class="section">
+        <div class="section-title">Hooks</div>
+        <div v-if="hookCatalog.length > 0" class="hook-list">
+          <label v-for="h in hookCatalog" :key="h.id" class="hook-item">
+            <input
+              type="checkbox"
+              :checked="!disabledHooksSet.has(h.id)"
+              @change="setHookEnabled(h.id, ($event.target as HTMLInputElement).checked)"
+            />
+            <div class="hook-body">
+              <code class="hook-id">{{ h.id }}</code>
+              <div class="hook-desc">{{ h.description }}</div>
+            </div>
+          </label>
+        </div>
+        <div v-else class="empty-hint">未获取到 hooks 列表（可先启动 OpenCode server 再重载）。</div>
+      </div>
+
       <div class="hint muted">
-        提示：这里只管理 <code>disabled_hooks</code> 与 <code>agents</code>（enabled / replace_plan）；其余字段建议在编辑器打开。
+        提示：这里只管理 <code>disabled_hooks</code> 与 <code>agents</code>（enabled / replace_plan / model）；其余字段建议在编辑器打开。
       </div>
     </div>
 
@@ -141,6 +186,8 @@
 import { computed, inject, onMounted, reactive, ref } from 'vue';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { RuntimeKey } from '../../composables/runtimeContext';
+import { DropdownItem, DropdownTrigger } from '../Dropdown';
+import { useModelManagement } from '../../composables/useModelManagement';
 
 type Scope = 'user' | 'project';
 
@@ -159,12 +206,14 @@ type FileState = {
 
 type HookInfo = { id: string; description: string };
 type TriState = 'default' | 'on' | 'off';
-type AgentEntry = { name: string; enabled: TriState; replacePlan: TriState };
+type AgentEntry = { name: string; enabled: TriState; replacePlan: TriState; model: string };
 
 const runtime = inject(RuntimeKey);
 if (!runtime) {
   throw new Error('[OhMyConfigCard] Runtime not provided');
 }
+
+const { availableModels } = useModelManagement();
 
 const state = reactive<FileState>({
   scope: 'user',
@@ -207,6 +256,7 @@ const dirty = computed(() => {
     if (String(ax?.name) !== String(by?.name)) return true;
     if (String(ax?.enabled) !== String(by?.enabled)) return true;
     if (String(ax?.replacePlan) !== String(by?.replacePlan)) return true;
+    if (String(ax?.model ?? '') !== String(by?.model ?? '')) return true;
   }
   return false;
 });
@@ -292,7 +342,8 @@ function normalizeAgents(list: AgentEntry[]): AgentEntry[] {
     const enabled: TriState = item.enabled === 'on' || item.enabled === 'off' ? item.enabled : 'default';
     const replacePlan: TriState =
       item.replacePlan === 'on' || item.replacePlan === 'off' ? item.replacePlan : 'default';
-    map.set(name, { name, enabled, replacePlan });
+    const model = typeof item?.model === 'string' ? item.model.trim() : '';
+    map.set(name, { name, enabled, replacePlan, model });
   }
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -304,7 +355,7 @@ function addAgent() {
     newAgentName.value = '';
     return;
   }
-  agents.value = normalizeAgents([...agents.value, { name, enabled: 'default', replacePlan: 'default' }]);
+  agents.value = normalizeAgents([...agents.value, { name, enabled: 'default', replacePlan: 'default', model: '' }]);
   newAgentName.value = '';
 }
 
@@ -312,6 +363,25 @@ function removeAgent(agentName: string) {
   const name = String(agentName ?? '').trim();
   if (!name) return;
   agents.value = normalizeAgents(agents.value.filter((a) => a.name !== name));
+}
+
+const enabledModels = computed(() => {
+  return (availableModels.value || []).filter((m) => !m.disabled);
+});
+
+function filterModelsBySearch(term: string) {
+  const list = enabledModels.value || [];
+  const needle = String(term ?? '').trim().toLowerCase();
+  if (!needle) return list;
+  return list.filter((m) => {
+    const hay = `${m.value} ${m.label ?? ''} ${m.description ?? ''}`.toLowerCase();
+    return hay.includes(needle);
+  });
+}
+
+function selectAgentModel(agent: AgentEntry, modelValue: string, close?: () => void) {
+  agent.model = String(modelValue ?? '').trim();
+  close?.();
 }
 
 async function loadHookCatalog() {
@@ -365,7 +435,8 @@ async function loadFile(opts?: { silent?: boolean }) {
         const entries = Object.entries(obj.agents as Record<string, any>).map(([name, cfg]) => ({
           name: String(name).trim(),
           enabled: boolToTriState((cfg as any)?.enabled),
-          replacePlan: boolToTriState((cfg as any)?.replace_plan)
+          replacePlan: boolToTriState((cfg as any)?.replace_plan),
+          model: typeof (cfg as any)?.model === 'string' ? String((cfg as any).model).trim() : ''
         }));
         agents.value = normalizeAgents(entries);
       } else {
@@ -429,16 +500,20 @@ async function save() {
       for (const entry of desired) {
         const desiredEnabled = triStateToBool(entry.enabled);
         const desiredReplacePlan = triStateToBool(entry.replacePlan);
+        const desiredModel = String(entry.model ?? '').trim();
+        const desiredModelValue = desiredModel ? desiredModel : undefined;
 
         const existing = existingAgents ? existingAgents[entry.name] : undefined;
         const existingIsObj = isPlainObject(existing);
         const shouldReplaceWhole =
-          !existingIsObj && (desiredEnabled !== undefined || desiredReplacePlan !== undefined);
+          !existingIsObj &&
+          (desiredEnabled !== undefined || desiredReplacePlan !== undefined || desiredModelValue !== undefined);
 
         if (shouldReplaceWhole) {
           const newObj: any = {};
           if (desiredEnabled !== undefined) newObj.enabled = desiredEnabled;
           if (desiredReplacePlan !== undefined) newObj.replace_plan = desiredReplacePlan;
+          if (desiredModelValue !== undefined) newObj.model = desiredModelValue;
           next = applyModify(next, ['agents', entry.name], newObj);
           continue;
         }
@@ -446,9 +521,11 @@ async function save() {
         if (existingIsObj) {
           const enabledExists = Object.prototype.hasOwnProperty.call(existing, 'enabled');
           const replacePlanExists = Object.prototype.hasOwnProperty.call(existing, 'replace_plan');
+          const modelExists = Object.prototype.hasOwnProperty.call(existing, 'model');
           const existingEnabled = typeof (existing as any)?.enabled === 'boolean' ? (existing as any).enabled : undefined;
           const existingReplacePlan =
             typeof (existing as any)?.replace_plan === 'boolean' ? (existing as any).replace_plan : undefined;
+          const existingModel = typeof (existing as any)?.model === 'string' ? String((existing as any).model) : undefined;
 
           if (desiredEnabled === undefined) {
             if (enabledExists) next = applyModify(next, ['agents', entry.name, 'enabled'], undefined);
@@ -461,6 +538,12 @@ async function save() {
           } else if (existingReplacePlan !== desiredReplacePlan) {
             next = applyModify(next, ['agents', entry.name, 'replace_plan'], desiredReplacePlan);
           }
+
+          if (desiredModelValue === undefined) {
+            if (modelExists) next = applyModify(next, ['agents', entry.name, 'model'], undefined);
+          } else if (existingModel !== desiredModelValue) {
+            next = applyModify(next, ['agents', entry.name, 'model'], desiredModelValue);
+          }
         } else if (desiredEnabled === undefined && desiredReplacePlan === undefined) {
           if (existing === undefined) {
             next = applyModify(next, ['agents', entry.name], {});
@@ -469,6 +552,7 @@ async function save() {
           const newObj: any = {};
           if (desiredEnabled !== undefined) newObj.enabled = desiredEnabled;
           if (desiredReplacePlan !== undefined) newObj.replace_plan = desiredReplacePlan;
+          if (desiredModelValue !== undefined) newObj.model = desiredModelValue;
           next = applyModify(next, ['agents', entry.name], newObj);
         }
       }
@@ -540,7 +624,7 @@ onMounted(async () => {
 .card {
   border: 1px solid var(--vscode-panel-border);
   border-radius: 10px;
-  overflow: hidden;
+  overflow: visible;
   background: color-mix(in srgb, var(--vscode-editor-background) 90%, transparent);
 }
 
@@ -760,6 +844,10 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+.form-input-compact {
+  padding: 4px 8px;
+}
+
 .form-input::placeholder {
   color: var(--vscode-input-placeholderForeground);
 }
@@ -791,12 +879,19 @@ onMounted(async () => {
 
 .agent-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 10px;
   border-radius: 8px;
   border: 1px solid var(--vscode-panel-border);
   background: color-mix(in srgb, var(--vscode-editor-background) 85%, transparent);
+}
+
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .agent-name {
@@ -807,7 +902,7 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.agent-controls {
+.agent-row {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -821,8 +916,34 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+.agent-model-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.agent-model-row .form-input-compact {
+  min-width: 260px;
+  flex: 1;
+}
+
 .agent-control-label {
   opacity: 0.75;
+}
+
+.agent-control-label-fixed {
+  width: 72px;
+  flex-shrink: 0;
+}
+
+.agent-row-model {
+  align-items: flex-start;
+}
+
+.agent-row-flags {
+  gap: 14px;
 }
 
 .btn.danger {

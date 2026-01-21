@@ -27,18 +27,19 @@
       </nav>
 
       <!-- 内容面板 -->
-      <div class="settings-panel">
-        <div class="panel-container">
-          <!-- OpenCode 配置 -->
-          <OpenCodeFilesSettings v-if="currentSection === 'opencodeFiles'" />
-
-          <!-- MCP服务器 -->
-          <ProvidersSettings v-else-if="currentSection === 'providers'" />
-          <McpServersSettings v-else-if="currentSection === 'mcp'" />
-
-          <!-- Agents -->
-          <AgentsSettings v-else-if="currentSection === 'agents'" />
-
+        <div class="settings-panel">
+          <div class="panel-container">
+            <!-- OpenCode 配置 -->
+            <OpenCodeFilesSettings v-if="currentSection === 'opencodeFiles'" />
+            <OhMySettings v-else-if="currentSection === 'ohMy'" />
+ 
+            <!-- MCP服务器 -->
+            <ProvidersSettings v-else-if="currentSection === 'providers'" />
+            <McpServersSettings v-else-if="currentSection === 'mcp'" />
+ 
+            <!-- Agents -->
+            <AgentsSettings v-else-if="currentSection === 'agents'" />
+ 
           <!-- Skills -->
           <SkillsSettings v-else-if="currentSection === 'skills'" />
         </div>
@@ -47,13 +48,14 @@
   </div>
 </template>
 
-<script setup lang="ts">
-import { ref } from 'vue'
-import McpServersSettings from '../components/Settings/McpServersSettings.vue'
-import OpenCodeFilesSettings from '../components/Settings/OpenCodeFilesSettings.vue'
-import ProvidersSettings from '../components/Settings/ProvidersSettings.vue'
-import AgentsSettings from '../components/Settings/AgentsSettings.vue'
-import SkillsSettings from '../components/Settings/SkillsSettings.vue'
+ <script setup lang="ts">
+ import { ref } from 'vue'
+ import McpServersSettings from '../components/Settings/McpServersSettings.vue'
+ import OpenCodeFilesSettings from '../components/Settings/OpenCodeFilesSettings.vue'
+ import OhMySettings from '../components/Settings/OhMySettings.vue'
+ import ProvidersSettings from '../components/Settings/ProvidersSettings.vue'
+ import AgentsSettings from '../components/Settings/AgentsSettings.vue'
+ import SkillsSettings from '../components/Settings/SkillsSettings.vue'
 
 interface SettingsSection {
   id: string
@@ -68,17 +70,22 @@ defineEmits<{
 
 const currentSection = ref('opencodeFiles')
 
-const sections: SettingsSection[] = [
-  {
-    id: 'opencodeFiles',
-    label: 'OpenCode 配置',
-    icon: 'json'
-  },
-  {
-    id: 'providers',
-    label: 'Providers',
-    icon: 'cloud'
-  },
+ const sections: SettingsSection[] = [
+   {
+     id: 'opencodeFiles',
+     label: 'OpenCode 配置',
+     icon: 'json'
+   },
+   {
+     id: 'ohMy',
+     label: 'oh-my-opencode',
+     icon: 'settings-gear'
+   },
+   {
+     id: 'providers',
+     label: 'Providers',
+     icon: 'cloud'
+   },
   { id: 'mcp', label: 'MCP服务器', icon: 'server', needsRestart: true },
   {
     id: 'agents',

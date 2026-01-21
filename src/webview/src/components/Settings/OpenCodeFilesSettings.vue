@@ -8,7 +8,6 @@
 
     <div class="cards">
       <OpencodeConfigCard />
-      <OhMyConfigCard />
       <AuthConfigCard />
     </div>
   </div>
@@ -16,7 +15,6 @@
 
 <script setup lang="ts">
 import AuthConfigCard from './AuthConfigCard.vue';
-import OhMyConfigCard from './OhMyConfigCard.vue';
 import OpencodeConfigCard from './OpencodeConfigCard.vue';
 </script>
 

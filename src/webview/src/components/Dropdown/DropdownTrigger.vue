@@ -139,7 +139,7 @@ const searchTerm = ref('')
 // 智能定位计算
 const dropdownStyle = computed(() => {
   const style: any = {
-    position: 'absolute',
+    position: 'fixed',
     minWidth: '140px',
     maxWidth: '240px',
     width: props.width ? `${props.width}px` : 'auto',
@@ -164,14 +164,13 @@ const dropdownStyle = computed(() => {
   // 智能选择显示位置
   const showBelow = spaceBelow >= dropdownTotalHeight || spaceBelow > spaceAbove
 
-  // 垂直定位 - 相对于触发器
+  // 垂直定位 - 相对于 viewport（避免被滚动容器/卡片 overflow 裁剪）
   if (showBelow) {
-    style.top = '100%'
-    style.marginTop = '4px'
+    style.top = `${triggerRect.bottom + 4}px`
+    style.bottom = 'auto'
   } else {
-    style.bottom = '100%'
     style.top = 'auto'
-    style.marginBottom = '4px'
+    style.bottom = `${viewportHeight - triggerRect.top + 4}px`
   }
 
   // 计算 dropdown 宽度（用于边界检查）
@@ -209,9 +208,7 @@ const dropdownStyle = computed(() => {
     leftPosition = viewportWidth - dropdownWidth - padding
   }
 
-  // 转换为相对于触发器的位置
-  const relativeLeft = leftPosition - triggerRect.left
-  style.left = `${relativeLeft}px`
+  style.left = `${leftPosition}px`
 
   return style
 })

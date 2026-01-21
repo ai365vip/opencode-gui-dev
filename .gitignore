@@ -7,3 +7,21 @@ docs/_local/
 
 # OS / editor
 .DS_Store
+
+# Temporary directories
+_temp_opencode/
+
+# Documentation
+docs/
+
+# Scripts
+scripts/
+
+# Editor config
+.vscode/
+
+# Claude config
+.claude/
+
+# Build artifacts
+*.vsix
