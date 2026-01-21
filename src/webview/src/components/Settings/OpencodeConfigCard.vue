@@ -116,7 +116,9 @@
             <option value="on">开启</option>
             <option value="off">关闭</option>
           </select>
-          <div class="form-hint"><code>compaction.prune</code></div>
+          <div class="form-hint">
+            <code>compaction.prune</code>：清理较旧的工具输出以节省上下文 Token（不影响已执行结果/文件改动）
+          </div>
         </div>
       </div>
 
