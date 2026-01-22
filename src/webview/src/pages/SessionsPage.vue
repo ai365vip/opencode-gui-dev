@@ -71,11 +71,24 @@
         >
             <div class="session-card-header">
               <h3 class="session-title">{{ session.summary.value || 'New Conversation' }}</h3>
-              <div class="session-date">{{ formatRelativeTime(session.lastModifiedTime.value) }}</div>
+              <div class="session-actions">
+                <div class="session-date">{{ formatRelativeTime(session.lastModifiedTime.value) }}</div>
+                <button
+                  v-if="session.sessionId.value"
+                  class="delete-session-btn"
+                  :disabled="deletingSessionId === session.sessionId.value"
+                  title="删除会话"
+                  @click.stop="deleteSession(session)"
+                >
+                  <span class="codicon codicon-trash"></span>
+                </button>
+              </div>
             </div>
 
             <div class="session-meta">
-              <span class="session-messages">{{ session.messageCount.value }} 条消息</span>
+              <span v-if="session.messageCount.value > 0" class="session-messages"
+                >{{ session.messageCount.value }} 条消息</span
+              >
               <span v-if="session.sessionId.value" class="session-id">{{ session.sessionId.value }}</span>
             </div>
 
@@ -92,6 +105,7 @@ import Icon from '../components/Icon.vue';
 import { RuntimeKey } from '../composables/runtimeContext';
 import { useSessionStore } from '../composables/useSessionStore';
 import { useSession } from '../composables/useSession';
+import { useConfirm } from '../composables/useConfirm';
 import type { Session } from '../core/Session';
 
 // 注入运行时
@@ -102,6 +116,7 @@ if (!runtime) {
 
 // 🔥 使用 useSessionStore 包装为 Vue-friendly API
 const store = useSessionStore(runtime.sessionStore);
+const { confirm } = useConfirm();
 
 // 🔥 视图模型：将 alien-signals Session 转换为 Vue-friendly 包装
 const sessionList = computed(() => {
@@ -120,6 +135,7 @@ const error = ref('');
 const searchQuery = ref('');
 const showSearch = ref(false);
 const searchInput = ref<HTMLInputElement | null>(null);
+const deletingSessionId = ref('');
 
 
 // 计算属性：过滤和排序会话列表
@@ -162,6 +178,51 @@ const openSession = (wrappedSession: ReturnType<typeof useSession> | undefined) 
   const rawSession = wrappedSession.__session;
   store.setActiveSession(rawSession);
   emit('switchToChat', wrappedSession.sessionId.value);
+};
+
+const deleteSession = async (wrappedSession: ReturnType<typeof useSession> | undefined) => {
+  if (!wrappedSession) return;
+  const sessionId = String(wrappedSession.sessionId.value ?? '').trim();
+  if (!sessionId) return;
+  if (deletingSessionId.value === sessionId) return;
+
+  const summary = String(wrappedSession.summary.value ?? '').trim();
+  const label = summary || sessionId;
+  const confirmed = await confirm({
+    title: '删除会话',
+    message: `确定删除这个会话吗？\n\n${label}\n\n（删除后无法恢复）`,
+    type: 'warning',
+    confirmText: '删除',
+    cancelText: '取消'
+  });
+  if (!confirmed) return;
+
+  deletingSessionId.value = sessionId;
+  try {
+    const success = await store.deleteSession(sessionId);
+    if (!success) {
+      await confirm({
+        title: '删除失败',
+        message: '未能删除该会话。',
+        type: 'error',
+        confirmText: '知道了',
+        cancelText: '关闭'
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await confirm({
+      title: '删除失败',
+      message: msg,
+      type: 'error',
+      confirmText: '知道了',
+      cancelText: '关闭'
+    });
+  } finally {
+    if (deletingSessionId.value === sessionId) {
+      deletingSessionId.value = '';
+    }
+  }
 };
 
 
@@ -455,6 +516,36 @@ onMounted(() => {
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
+}
+
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.delete-session-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.delete-session-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  opacity: 1;
+}
+
+.delete-session-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .session-title {

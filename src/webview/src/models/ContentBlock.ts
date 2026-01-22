@@ -8,6 +8,7 @@ export interface TextBlock {
   type: 'text';
   text: string;
   isSlashCommand?: boolean;
+  streaming?: boolean;
 }
 
 export interface ThinkingBlock {

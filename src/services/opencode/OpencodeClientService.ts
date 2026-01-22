@@ -72,6 +72,8 @@ export interface IOpencodeClientService {
 export class OpencodeClientService implements IOpencodeClientService {
   readonly _serviceBrand: undefined;
 
+  private readonly requestTimeoutMs = 30_000;
+
   constructor(
     @ILogService private readonly logService: ILogService,
     @IOpencodeServerService private readonly serverService: IOpencodeServerService
@@ -187,8 +189,26 @@ export class OpencodeClientService implements IOpencodeClientService {
   async deleteSession(sessionId: string, cwd?: string): Promise<boolean> {
     const baseUrl = await this.getBaseUrl();
     const url = this.buildUrl(`/session/${encodeURIComponent(sessionId)}`, baseUrl, cwd);
-    const res = await this.fetchJson(url, this.withDirectoryHeader({ method: "DELETE" }, cwd));
-    return Boolean(res);
+    const res = await this.fetchJson<any>(url, this.withDirectoryHeader({ method: "DELETE" }, cwd));
+
+    // Many servers return 204 No Content (or an empty body) for DELETE, which is still success.
+    if (res === undefined || res === null || res === "") return true;
+
+    if (typeof res === "boolean") return res;
+
+    if (typeof res === "string") {
+      const normalized = res.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+      return true;
+    }
+
+    if (typeof res === "object") {
+      const success = (res as any)?.success;
+      if (typeof success === "boolean") return success;
+    }
+
+    return true;
   }
 
   async listSessionChildren(sessionId: string, cwd?: string): Promise<any> {
@@ -371,8 +391,27 @@ export class OpencodeClientService implements IOpencodeClientService {
 
   private async getJson<T>(pathname: string, cwd?: string): Promise<T> {
     const baseUrl = await this.getBaseUrl();
-    const url = this.buildUrl(pathname, baseUrl, cwd);
-    return this.fetchJson<T>(url, this.withDirectoryHeader({ method: "GET" }, cwd));
+    const init = this.withDirectoryHeader({ method: "GET" }, cwd);
+
+    try {
+      const url = this.buildUrl(pathname, baseUrl, cwd);
+      return await this.fetchJson<T>(url, init);
+    } catch (error) {
+      // If the local server died after we cached baseUrl, attempt a one-time restart and retry.
+      if (this.isLocalBaseUrl(baseUrl) && (this.isConnectionRefusedError(error) || this.isTimeoutError(error))) {
+        this.logService.warn(
+          `[OpencodeClientService] Request failed (${this.isTimeoutError(error) ? "timeout" : "connection refused"}); restarting server and retrying: ${baseUrl}`
+        );
+        try {
+          this.serverService.dispose();
+        } catch {}
+        const retryBaseUrl = await this.getBaseUrl();
+        const retryUrl = this.buildUrl(pathname, retryBaseUrl, cwd);
+        return await this.fetchJson<T>(retryUrl, init);
+      }
+
+      throw error;
+    }
   }
 
   private async sendJson<T>(
@@ -381,19 +420,112 @@ export class OpencodeClientService implements IOpencodeClientService {
     cwd?: string,
     method: "POST" | "PATCH" | "PUT" | "DELETE" = "POST"
   ): Promise<T> {
-    const baseUrl = await this.getBaseUrl();
-    const url = this.buildUrl(pathname, baseUrl, cwd);
     const headers = { "Content-Type": "application/json" };
     const init: RequestInit =
       method === "DELETE"
         ? { method, headers }
         : { method, headers, body: JSON.stringify(body ?? {}) };
-    return this.fetchJson<T>(url, this.withDirectoryHeader(init, cwd));
+
+    const baseUrl = await this.getBaseUrl();
+    const withDir = this.withDirectoryHeader(init, cwd);
+
+    try {
+      const url = this.buildUrl(pathname, baseUrl, cwd);
+      return await this.fetchJson<T>(url, withDir);
+    } catch (error) {
+      if (this.isLocalBaseUrl(baseUrl) && (this.isConnectionRefusedError(error) || this.isTimeoutError(error))) {
+        this.logService.warn(
+          `[OpencodeClientService] Request failed (${this.isTimeoutError(error) ? "timeout" : "connection refused"}); restarting server and retrying: ${baseUrl}`
+        );
+        try {
+          this.serverService.dispose();
+        } catch {}
+        const retryBaseUrl = await this.getBaseUrl();
+        const retryUrl = this.buildUrl(pathname, retryBaseUrl, cwd);
+        return await this.fetchJson<T>(retryUrl, withDir);
+      }
+      throw error;
+    }
+  }
+
+  private isLocalBaseUrl(baseUrl: string): boolean {
+    try {
+      const url = new URL(baseUrl);
+      const host = url.hostname;
+      return host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0";
+    } catch {
+      return false;
+    }
+  }
+
+  private isConnectionRefusedError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/ECONNREFUSED/i.test(msg) || /ERR_CONNECTION_REFUSED/i.test(msg)) return true;
+    const anyErr: any = error as any;
+    const code = String(anyErr?.code ?? anyErr?.cause?.code ?? "").toUpperCase();
+    return code === "ECONNREFUSED";
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/OpenCode API timeout after/i.test(msg)) return true;
+    const anyErr: any = error as any;
+    const code = String(anyErr?.code ?? anyErr?.cause?.code ?? "").toUpperCase();
+    return code === "ETIMEDOUT" || code === "TIMEOUT";
   }
 
   private async fetchJson<T>(url: string, init: RequestInit): Promise<T> {
-    const res = await fetch(url, init);
-    const text = await res.text().catch(() => "");
+    const controller = new AbortController();
+    const parentSignal = init.signal;
+    let timedOut = false;
+    let abortListener: (() => void) | undefined;
+
+    if (parentSignal) {
+      if (parentSignal.aborted) {
+        controller.abort();
+      } else {
+        abortListener = () => controller.abort();
+        parentSignal.addEventListener("abort", abortListener, { once: true });
+      }
+    }
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        controller.abort();
+      } catch {}
+    }, this.requestTimeoutMs);
+
+    let res: Response | undefined;
+    let text = "";
+    try {
+      res = await fetch(url, { ...init, signal: controller.signal });
+      text = await res.text().catch(() => "");
+    } catch (error) {
+      if (abortListener) {
+        try {
+          parentSignal?.removeEventListener("abort", abortListener);
+        } catch {}
+      }
+      clearTimeout(timeout);
+
+      if (timedOut) {
+        throw new Error(`OpenCode API timeout after ${this.requestTimeoutMs}ms: ${url}`);
+      }
+
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      if (abortListener) {
+        try {
+          parentSignal?.removeEventListener("abort", abortListener);
+        } catch {}
+      }
+      clearTimeout(timeout);
+    }
+
+    if (!res) {
+      throw new Error(`OpenCode API request failed (no response): ${url}`);
+    }
 
     if (!res.ok) {
       throw new Error(`OpenCode API error (${res.status}): ${text || res.statusText}`);

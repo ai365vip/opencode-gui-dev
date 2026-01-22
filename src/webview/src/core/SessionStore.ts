@@ -31,7 +31,9 @@ export class SessionStore {
     this.effectCleanups.push(
       effect(() => {
         if (this.connectionManager.connection()) {
-          void this.listSessions();
+          void this.listSessions().catch((error) => {
+            console.warn('[SessionStore] listSessions failed:', error);
+          });
         }
       })
     );
@@ -47,9 +49,13 @@ export class SessionStore {
         }
 
         if (session.isOffline()) {
-          session.loadFromServer();
+          void session.loadFromServer().catch((error) => {
+            console.warn('[SessionStore] loadFromServer failed:', error);
+          });
         } else {
-          session.preloadConnection();
+          void session.preloadConnection().catch((error) => {
+            console.warn('[SessionStore] preloadConnection failed:', error);
+          });
         }
 
         const url = new URL(window.location.toString());
@@ -174,6 +180,70 @@ export class SessionStore {
     })();
 
     await this.currentConnectionPromise;
+  }
+
+  async openSessionById(sessionId: string): Promise<void> {
+    const id = String(sessionId ?? '').trim();
+    if (!id) return;
+
+    const existing = this.sessions().find((s) => s.sessionId() === id);
+    if (existing) {
+      this.setActiveSession(existing);
+      return;
+    }
+
+    const session = Session.fromServer(
+      {
+        id,
+        parentId: undefined,
+        lastModified: Date.now(),
+        summary: id,
+        worktree: undefined,
+        messageCount: 0,
+        isCurrentWorkspace: true
+      },
+      () => this.getConnection(),
+      this.context
+    );
+
+    this.attachPermissionListener(session);
+    this.sessions([session, ...this.sessions()]);
+    this.setActiveSession(session);
+
+    // Best-effort refresh for metadata (title/messageCount). Don't block UI on it.
+    void this.listSessions().catch((error) => {
+      console.warn('[SessionStore] listSessions failed after openSessionById:', error);
+    });
+  }
+
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const id = String(sessionId ?? '').trim();
+    if (!id) return false;
+
+    const connection = await this.getConnection();
+    const response = await connection.deleteSession(id);
+    const success = Boolean((response as any)?.success ?? response);
+    if (!success) return false;
+
+    const remaining: Session[] = [];
+    for (const session of this.sessions()) {
+      if (session.sessionId() === id) {
+        try {
+          session.dispose();
+        } catch {}
+        continue;
+      }
+      remaining.push(session);
+    }
+
+    this.sessions(remaining);
+
+    const active = this.activeSession();
+    if (active?.sessionId() === id) {
+      this.activeSession(remaining[0]);
+    }
+
+    return true;
   }
 
   setActiveSession(session: Session | undefined): void {

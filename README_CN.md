@@ -57,6 +57,7 @@ OpenCode 安装文档：https://opencode.ai/docs
 - `opencodeGui.selectedModel`：默认模型（`provider/model`）
 - `opencodeGui.selectedAgent`：默认 agent 名称
 - `opencodeGui.configDir`：启动 server 时传入 `OPENCODE_CONFIG_DIR`（适合 oh-my-opencode profile/隔离）
+- `opencodeGui.runningWatchdogMs`：会话运行中若连续这么久（毫秒）未收到 SSE 事件则自动中断（防止卡死）；设为 `0` 可关闭。
 
 ### OpenCode 配置文件
 

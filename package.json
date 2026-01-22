@@ -2,7 +2,7 @@
   "name": "opencode-gui-vscode",
   "displayName": "OpenCode GUI",
   "description": "在 VSCode 中使用 OpenCode 的图形界面（WebView），自动拉起本地 opencode server。",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "Ai365vip",
   "repository": {
     "type": "git",
@@ -49,6 +49,11 @@
           "type": "string",
           "default": "",
           "description": "Optional OPENCODE_CONFIG_DIR override (useful for oh-my-opencode profiles)"
+        },
+        "opencodeGui.runningWatchdogMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Abort a running session if no SSE events are received for this long (ms). Set to 0 to disable."
         }
       }
     },

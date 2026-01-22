@@ -74,6 +74,8 @@ export class Session {
   private lastSentSelection?: SelectionRange;
   private effectCleanup?: () => void;
   private isProcessingQueue = false;
+  private pendingMessageEvents: any[] = [];
+  private pendingMessageFlushId: number | undefined;
 
   readonly connection = signal<BaseTransport | undefined>(undefined);
 
@@ -598,12 +600,21 @@ export class Session {
     if (this.effectCleanup) {
       this.effectCleanup();
     }
+    this.pendingMessageEvents = [];
+    this.cancelPendingMessageFlush();
   }
 
   private async readMessages(stream: AsyncIterable<any>): Promise<void> {
+    let yielded = Date.now();
     try {
       for await (const event of stream) {
         this.processIncomingMessage(event);
+
+        // Allow the browser to paint during high-frequency streams (matches upstream OpenCode behavior).
+        if (Date.now() - yielded >= 8) {
+          yielded = Date.now();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
       }
     } catch (error) {
       this.error(error instanceof Error ? error.message : String(error));
@@ -613,12 +624,65 @@ export class Session {
     }
   }
 
-  private processIncomingMessage(event: any): void {
+  private schedulePendingMessageFlush(): void {
+    if (this.pendingMessageFlushId !== undefined) return;
+
+    const schedule =
+      typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (fn: () => void) => window.setTimeout(fn, 0);
+
+    this.pendingMessageFlushId = schedule(() => {
+      this.pendingMessageFlushId = undefined;
+      this.flushPendingMessageEvents();
+    });
+  }
+
+  private cancelPendingMessageFlush(): void {
+    const id = this.pendingMessageFlushId;
+    if (id === undefined) return;
+    this.pendingMessageFlushId = undefined;
+
+    const cancel =
+      typeof cancelAnimationFrame === 'function'
+        ? cancelAnimationFrame
+        : (handle: number) => clearTimeout(handle);
+
+    cancel(id);
+  }
+
+  private flushPendingMessageEvents(): void {
+    if (this.pendingMessageEvents.length === 0) return;
+
+    const pending = this.pendingMessageEvents;
+    this.pendingMessageEvents = [];
+
     const currentMessages = [...this.messages()] as Message[];
 
-    this.processMessage(event);
-    processAndAttachMessage(currentMessages, event);
+    for (const event of pending) {
+      processAndAttachMessage(currentMessages, event);
+      if (event?.type === 'assistant' && event?.stream === true && !this.busy()) {
+        processAndAttachMessage(currentMessages, { type: 'result', timestamp: Date.now() });
+      }
+    }
+
     this.messages(currentMessages);
+  }
+
+  private flushPendingMessageEventsNow(): void {
+    this.cancelPendingMessageFlush();
+    this.flushPendingMessageEvents();
+  }
+
+  private processIncomingMessage(event: any): void {
+    this.processMessage(event);
+
+    const affectsMessages =
+      event?.type === 'assistant' || event?.type === 'user' || event?.type === 'result';
+    if (affectsMessages) {
+      this.pendingMessageEvents.push(event);
+      this.schedulePendingMessageFlush();
+    }
 
     const pushProgress = (type: string, summary: string) => {
       const trimmed = String(summary ?? '').trim();
@@ -657,6 +721,7 @@ export class Session {
     } else if (event?.type === 'result') {
       this.busy(false);
       pushProgress('session', 'idle');
+      this.flushPendingMessageEventsNow();
       void this.processNextQueuedMessage();
     }
   }

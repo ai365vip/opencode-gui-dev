@@ -51,6 +51,7 @@ OpenCode install instructions: https://opencode.ai/docs
 - `opencodeGui.selectedModel`: default model (`provider/model`)
 - `opencodeGui.selectedAgent`: default agent name
 - `opencodeGui.configDir`: pass `OPENCODE_CONFIG_DIR` when starting the server (useful for oh-my-opencode profiles)
+- `opencodeGui.runningWatchdogMs`: abort a running session if no SSE events are received for this long (ms). Set to `0` to disable.
 
 ### OpenCode config files
 

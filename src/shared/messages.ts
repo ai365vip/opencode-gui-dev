@@ -313,6 +313,19 @@ export interface ListSessionsResponse {
 }
 
 /**
+ * 删除会话
+ */
+export interface DeleteSessionRequest {
+  type: 'delete_session_request';
+  sessionId: string;
+}
+
+export interface DeleteSessionResponse {
+  type: 'delete_session_response';
+  success: boolean;
+}
+
+/**
  * 获取会话详情
  */
 export interface GetSessionRequest {
@@ -899,6 +912,7 @@ export type WebViewRequest =
   | GetMcpServersRequest
   | GetAssetUrisRequest
   | ListSessionsRequest
+  | DeleteSessionRequest
   | GetSessionRequest
   | ExecRequest
   | ListFilesRequest
@@ -942,6 +956,7 @@ export type WebViewRequestResponse =
   | GetMcpServersResponse
   | GetAssetUrisResponse
   | ListSessionsResponse
+  | DeleteSessionResponse
   | GetSessionResponse
   | ExecResponse
   | ListFilesResponse

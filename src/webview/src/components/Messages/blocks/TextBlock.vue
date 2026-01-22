@@ -1,11 +1,17 @@
 <template>
   <div class="text-block">
-    <div :class="markdownClasses" v-html="renderedMarkdown"></div>
+    <pre
+      v-if="isStreaming && (!canRenderMarkdownWhileStreaming || renderedMarkdown.length === 0)"
+      :class="[markdownClasses, 'streaming-plain']"
+    >
+      {{ props.block.text }}
+    </pre>
+    <div v-else :class="markdownClasses" v-html="renderedMarkdown"></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { TextBlock as TextBlockType } from '../../../models/ContentBlock';
 import type { ToolContext } from '../../../types/tool';
 import { marked } from 'marked';
@@ -17,6 +23,15 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const isStreaming = computed(() => props.block.streaming === true);
+const renderedMarkdown = ref('');
+
+const STREAMING_MARKDOWN_MAX_CHARS = 20000;
+const canRenderMarkdownWhileStreaming = computed(() => {
+  if (!isStreaming.value) return true;
+  return props.block.text.length <= STREAMING_MARKDOWN_MAX_CHARS;
+});
 
 // Markdown 类名
 const markdownClasses = computed(() => {
@@ -33,11 +48,53 @@ marked.setOptions({
   breaks: true,
 });
 
-// 渲染 Markdown
-const renderedMarkdown = computed(() => {
-  const rawHtml = marked.parse(props.block.text) as string;
+// 渲染 Markdown（流式时做节流，避免每个 delta 都全量解析导致卡顿）
+let renderTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearRenderTimer(): void {
+  if (!renderTimer) return;
+  clearTimeout(renderTimer);
+  renderTimer = undefined;
+}
+
+function renderMarkdown(text: string): void {
+  const rawHtml = marked.parse(text) as string;
   // TODO: 使用 DOMPurify.sanitize(rawHtml) 进行安全清理
-  return rawHtml;
+  renderedMarkdown.value = rawHtml;
+}
+
+function scheduleRender(delayMs: number): void {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => {
+    renderTimer = undefined;
+    renderMarkdown(props.block.text);
+  }, delayMs);
+}
+
+watch(
+  () => [props.block.text, props.block.streaming] as const,
+  ([text, streaming]) => {
+    if (!streaming) {
+      clearRenderTimer();
+      renderMarkdown(text);
+      return;
+    }
+
+    if (!canRenderMarkdownWhileStreaming.value) {
+      clearRenderTimer();
+      renderedMarkdown.value = '';
+      return;
+    }
+
+    const len = text.length;
+    const delay = len < 2000 ? 80 : len < 12000 ? 160 : 320;
+    scheduleRender(delay);
+  },
+  { immediate: true }
+);
+
+onUnmounted(() => {
+  clearRenderTimer();
 });
 </script>
 
@@ -53,6 +110,12 @@ const renderedMarkdown = computed(() => {
   color: var(--vscode-editor-foreground);
   word-wrap: break-word;
   user-select: text;
+}
+
+.streaming-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--vscode-editor-font-family);
 }
 
 .slash-command-text {

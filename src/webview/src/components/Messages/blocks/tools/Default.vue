@@ -6,6 +6,18 @@
   >
     <template #main>
       <span class="tool-label">{{ toolName }}</span>
+      <span v-if="childSessionId" class="session-badge" :title="`Session: ${childSessionId}`"
+        >#{{ childSessionId }}</span
+      >
+      <button
+        v-if="childSessionId"
+        class="open-session-inline-btn"
+        :disabled="isOpeningSession"
+        @click.stop="openChildSession"
+        title="Open session"
+      >
+        Open
+      </button>
     </template>
 
     <template #expandable>
@@ -30,9 +42,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, inject, ref } from 'vue';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
 import ToolError from './common/ToolError.vue';
+import { RuntimeKey } from '@/composables/runtimeContext';
 
 interface Props {
   toolUse?: any;
@@ -41,6 +54,9 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const runtime = inject(RuntimeKey, null);
+const isOpeningSession = ref(false);
 
 // 工具名称
 const toolName = computed(() => {
@@ -61,6 +77,46 @@ const input = computed(() => {
 
   return null;
 });
+
+function extractChildSessionId(text: string): string | undefined {
+  const raw = String(text ?? '');
+  if (!raw) return undefined;
+
+  const meta =
+    raw.match(/<task_metadata>[\s\S]*?session_id:\s*([^\s]+)[\s\S]*?<\/task_metadata>/i) ??
+    raw.match(/session_id:\s*([^\s]+)/i);
+  const id = meta?.[1] ? String(meta[1]).trim() : '';
+  return id || undefined;
+}
+
+const childSessionId = computed(() => {
+  const direct = String(props.toolUseResult?.sessionId ?? props.toolUseResult?.session_id ?? '').trim();
+  if (direct) return direct;
+
+  const fromInput = String((input.value as any)?.sessionId ?? (input.value as any)?.session_id ?? '').trim();
+  if (fromInput) return fromInput;
+
+  const content = props.toolResult?.content;
+  if (typeof content === 'string') {
+    return extractChildSessionId(content);
+  }
+
+  return undefined;
+});
+
+async function openChildSession(): Promise<void> {
+  const id = childSessionId.value;
+  if (!id || !runtime || isOpeningSession.value) return;
+
+  isOpeningSession.value = true;
+  try {
+    await runtime.sessionStore.openSessionById(id);
+  } catch (e) {
+    console.warn('[DefaultTool] open session failed:', e);
+  } finally {
+    isOpeningSession.value = false;
+  }
+}
 
 // 扁平化所有参数
 const flatParams = computed(() => {
@@ -127,6 +183,41 @@ function getValueClass(value: any): string {
   font-weight: 500;
   color: var(--vscode-foreground);
   font-size: 0.9em;
+}
+
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  background-color: color-mix(in srgb, var(--vscode-charts-blue) 18%, transparent);
+  color: var(--vscode-charts-blue);
+  border-radius: 3px;
+  font-size: 0.75em;
+  font-weight: 600;
+  font-family: var(--vscode-editor-font-family);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-session-inline-btn {
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.open-session-inline-btn:hover:enabled {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.open-session-inline-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .params-list {

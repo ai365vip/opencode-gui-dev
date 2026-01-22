@@ -22,6 +22,23 @@ interface RequestHandler {
   reject: (error: Error) => void;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+function getRequestTimeoutMs(request: WebViewRequest): number {
+  switch (request.type) {
+    case 'list_sessions_request':
+    case 'get_progress':
+      return 20_000;
+    case 'get_session_request':
+      return 60_000;
+    case 'open_content':
+    case 'open_diff':
+      return 180_000;
+    default:
+      return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+}
+
 /**
  * WebView ↔ Extension 传输抽象基类
  * - 使用 alien-signals 管理状态（统一架构）
@@ -239,6 +256,9 @@ export abstract class BaseTransport {
   listSessions(): Promise<any> {
     return this.sendRequest({ type: 'list_sessions_request' });
   }
+  deleteSession(sessionId: string): Promise<any> {
+    return this.sendRequest({ type: 'delete_session_request', sessionId });
+  }
   getSession(sessionId: string): Promise<any> {
     return this.sendRequest({ type: 'get_session_request', sessionId });
   }
@@ -299,16 +319,42 @@ export abstract class BaseTransport {
     abortSignal?: AbortSignal
   ): Promise<TResponse> {
     const requestId = Math.random().toString(36).slice(2);
+    const timeoutMs = getRequestTimeoutMs(request);
     const abortHandler = () => {
       this.cancelRequest(requestId);
     };
     if (abortSignal) abortSignal.addEventListener('abort', abortHandler, { once: true });
 
     return new Promise<TResponse>((resolve, reject) => {
-      this.outstandingRequests.set(requestId, { resolve, reject });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+
+      const finalize = (fn: (value: any) => void) => {
+        return (value: any) => {
+          if (settled) return;
+          settled = true;
+          if (timeout) clearTimeout(timeout);
+          fn(value);
+        };
+      };
+
+      timeout = setTimeout(() => {
+        if (settled) return;
+        try {
+          this.cancelRequest(requestId);
+        } catch {}
+        finalize(reject)(new Error(`Request timeout after ${timeoutMs}ms (${request.type})`));
+        this.outstandingRequests.delete(requestId);
+      }, timeoutMs);
+
+      this.outstandingRequests.set(requestId, {
+        resolve: finalize(resolve),
+        reject: finalize(reject)
+      });
       this.send({ type: 'request', channelId, requestId, request });
     }).finally(() => {
       if (abortSignal) abortSignal.removeEventListener('abort', abortHandler);
+      this.outstandingRequests.delete(requestId);
     });
   }
 
@@ -317,6 +363,7 @@ export abstract class BaseTransport {
   }
 
   private async readMessages(): Promise<void> {
+    let yielded = Date.now();
     try {
       for await (const message of this.fromHost) {
         switch (message.type) {
@@ -365,6 +412,12 @@ export abstract class BaseTransport {
             break;
           default:
             console.warn(`[BaseTransport] Unknown message type ${(message as any).type}`);
+        }
+
+        // Prevent main-thread starvation when a burst of messages arrives.
+        if (Date.now() - yielded >= 8) {
+          yielded = Date.now();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
       }
     } catch (error) {

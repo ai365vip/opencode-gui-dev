@@ -38,6 +38,7 @@ export interface UseSessionStoreReturn {
   getConnection: () => Promise<BaseTransport>;
   createSession: (options?: SessionOptions) => Promise<Session>;
   listSessions: () => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<boolean>;
   setActiveSession: (session: Session | undefined) => void;
   dispose: () => void;
 
@@ -65,6 +66,7 @@ export function useSessionStore(store: SessionStore): UseSessionStoreReturn {
   const getConnection = store.getConnection.bind(store);
   const createSession = store.createSession.bind(store);
   const listSessions = store.listSessions.bind(store);
+  const deleteSession = store.deleteSession.bind(store);
   const setActiveSession = store.setActiveSession.bind(store);
   const dispose = store.dispose.bind(store);
 
@@ -82,6 +84,7 @@ export function useSessionStore(store: SessionStore): UseSessionStoreReturn {
     getConnection,
     createSession,
     listSessions,
+    deleteSession,
     setActiveSession,
     dispose,
 

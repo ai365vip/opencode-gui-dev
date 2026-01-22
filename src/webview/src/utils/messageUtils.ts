@@ -8,6 +8,244 @@ import { Message } from '../models/Message';
 import { ContentBlockWrapper } from '../models/ContentBlockWrapper';
 import type { ToolResultBlock, ToolUseContentBlock, ContentBlockType } from '../models/ContentBlock';
 
+function finalizeAssistantStreamBlocks(messages: Message[]): void {
+    for (let mi = 0; mi < messages.length; mi++) {
+        const msg = messages[mi];
+        if (msg.type !== 'assistant') continue;
+
+        const content = msg.message.content;
+        if (!Array.isArray(content) || content.length === 0) continue;
+
+        let changed = false;
+        const nextContent = content.map((wrapper) => {
+            if (wrapper.content.type !== 'text') return wrapper;
+
+            const block: any = wrapper.content as any;
+            if (block?.streaming !== true) return wrapper;
+
+            changed = true;
+            return new ContentBlockWrapper({ ...block, streaming: false } as any);
+        });
+
+        if (!changed) continue;
+
+        messages[mi] = new Message(
+            msg.type,
+            { role: msg.message.role, content: nextContent },
+            msg.timestamp,
+            {
+                id: msg.id,
+                subtype: msg.subtype,
+                session_id: msg.session_id,
+                is_error: msg.is_error,
+                messageId: msg.messageId,
+                uuid: msg.uuid,
+            }
+        );
+    }
+}
+
+function tryAppendAssistantStreamDelta(messages: Message[], rawEvent: any): boolean {
+    if (rawEvent?.type !== 'assistant' || rawEvent?.stream !== true) {
+        return false;
+    }
+
+    const messageId = String(rawEvent?.message?.id ?? '').trim();
+    const rawContent = Array.isArray(rawEvent?.message?.content)
+        ? (rawEvent.message.content as any[])
+        : rawEvent?.message?.content != null
+            ? [{ type: 'text', text: String(rawEvent.message.content) }]
+            : [];
+
+    if (rawContent.length === 0) {
+        return true;
+    }
+
+    const trimOverlap = (prevText: string, deltaText: string): string => {
+        const prev = String(prevText ?? '');
+        const delta = String(deltaText ?? '');
+        if (!delta) return '';
+        if (!prev) return delta;
+
+        // Common "cumulative delta" case: delta is the full text so far.
+        if (delta.length >= prev.length && delta.startsWith(prev)) {
+            return delta.slice(prev.length);
+        }
+
+        // Exact duplicate (or server resend).
+        if (prev.endsWith(delta)) {
+            return '';
+        }
+
+        // Fallback: trim suffix/prefix overlap.
+        const MAX_OVERLAP = 2000;
+        const max = Math.min(prev.length, delta.length, MAX_OVERLAP);
+        for (let k = max; k > 0; k--) {
+            if (prev.endsWith(delta.slice(0, k))) {
+                return delta.slice(k);
+            }
+        }
+        return delta;
+    };
+
+    const appendTextDelta = (content: ContentBlockWrapper[], deltaText: string) => {
+        const text = String(deltaText ?? '');
+        if (!text) return;
+
+        for (let i = content.length - 1; i >= 0; i--) {
+            const w = content[i];
+            if (w?.content?.type !== 'text') continue;
+            const prev: any = w.content as any;
+            const base = String(prev?.text ?? '');
+            const trimmed = trimOverlap(base, text);
+            if (!trimmed) return;
+            content[i] = new ContentBlockWrapper({
+                ...prev,
+                text: `${base}${trimmed}`,
+                streaming: true,
+            } as any);
+            return;
+        }
+
+        content.push(new ContentBlockWrapper({ type: 'text', text, streaming: true } as any));
+    };
+
+    const appendThinkingDelta = (content: ContentBlockWrapper[], deltaThinking: string) => {
+        const thinking = String(deltaThinking ?? '');
+        if (!thinking) return;
+
+        for (let i = content.length - 1; i >= 0; i--) {
+            const w = content[i];
+            if (w?.content?.type !== 'thinking') continue;
+            const prev: any = w.content as any;
+            const base = String(prev?.thinking ?? '');
+            const trimmed = trimOverlap(base, thinking);
+            if (!trimmed) return;
+            content[i] = new ContentBlockWrapper({
+                ...prev,
+                thinking: `${base}${trimmed}`,
+            } as any);
+            return;
+        }
+
+        content.push(new ContentBlockWrapper({ type: 'thinking', thinking } as any));
+    };
+
+    let target: Message | undefined;
+    let targetIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.type !== 'assistant') continue;
+        if (messageId && msg.messageId !== messageId) continue;
+        const content = msg.message.content;
+        if (!Array.isArray(content)) continue;
+        const hasToolUse = content.some((w) => w.content.type === 'tool_use');
+        if (hasToolUse) continue;
+        target = msg;
+        targetIndex = i;
+        break;
+    }
+
+    if (!target || targetIndex < 0) {
+        const wrappers: ContentBlockWrapper[] = [];
+        for (const block of rawContent) {
+            if (!block) continue;
+            if (typeof block !== 'object') {
+                appendTextDelta(wrappers, String(block ?? ''));
+                continue;
+            }
+
+            if ((block as any).type === 'text') {
+                appendTextDelta(wrappers, String((block as any).text ?? ''));
+                continue;
+            }
+
+            if ((block as any).type === 'thinking') {
+                appendThinkingDelta(wrappers, String((block as any).thinking ?? ''));
+                continue;
+            }
+        }
+
+        if (wrappers.length === 0) {
+            return true;
+        }
+
+        const created = new Message(
+            'assistant',
+            { role: 'assistant', content: wrappers },
+            rawEvent?.timestamp ?? Date.now(),
+            {
+                messageId: messageId || undefined,
+                uuid: rawEvent?.uuid,
+            }
+        );
+
+        if (messageId) {
+            let insertAt = -1;
+            for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                if (msg.type === 'assistant' && msg.messageId === messageId) {
+                    insertAt = i;
+                    break;
+                }
+            }
+            if (insertAt >= 0) {
+                messages.splice(insertAt, 0, created);
+                target = created;
+                targetIndex = insertAt;
+            } else {
+                messages.push(created);
+                target = created;
+                targetIndex = messages.length - 1;
+            }
+        } else {
+            messages.push(created);
+            target = created;
+            targetIndex = messages.length - 1;
+        }
+    }
+
+    const existingTargetContent = target.message.content;
+    if (!Array.isArray(existingTargetContent)) {
+        return true;
+    }
+
+    const nextTargetContent = existingTargetContent.slice();
+    for (const block of rawContent) {
+        if (!block) continue;
+        if (typeof block !== 'object') {
+            appendTextDelta(nextTargetContent, String(block ?? ''));
+            continue;
+        }
+
+        if ((block as any).type === 'text') {
+            appendTextDelta(nextTargetContent, String((block as any).text ?? ''));
+            continue;
+        }
+
+        if ((block as any).type === 'thinking') {
+            appendThinkingDelta(nextTargetContent, String((block as any).thinking ?? ''));
+            continue;
+        }
+    }
+
+    messages[targetIndex] = new Message(
+        target.type,
+        { role: target.message.role, content: nextTargetContent },
+        target.timestamp,
+        {
+            id: target.id,
+            subtype: target.subtype,
+            session_id: target.session_id,
+            is_error: target.is_error,
+            messageId: target.messageId,
+            uuid: target.uuid,
+        }
+    );
+
+    return true;
+}
+
 /**
  * 反向查找 tool_use block
  *
@@ -142,10 +380,20 @@ export function attachToolResults(messages: Message[], newMessage: Message): voi
  * @param rawEvent 原始消息事件
  */
 export function processAndAttachMessage(messages: Message[], rawEvent: any): void {
-    // 1. 先关联 tool_result 和 toolUseResult（如果有）
-    // 注意：这一步要在添加新消息之前，因为 tool_use 应该已经在消息数组中了
-    if (rawEvent.type === 'user' && Array.isArray(rawEvent.message?.content)) {
-        for (const block of rawEvent.message.content) {
+     // 0. 流式增量：合并到同一条 assistant 消息，避免一堆小消息刷屏
+     if (rawEvent?.type === 'result') {
+         finalizeAssistantStreamBlocks(messages);
+         return;
+     }
+
+     if (tryAppendAssistantStreamDelta(messages, rawEvent)) {
+         return;
+     }
+
+     // 1. 先关联 tool_result 和 toolUseResult（如果有）
+     // 注意：这一步要在添加新消息之前，因为 tool_use 应该已经在消息数组中了
+     if (rawEvent.type === 'user' && Array.isArray(rawEvent.message?.content)) {
+         for (const block of rawEvent.message.content) {
             if (block.type === 'tool_result') {
                 const toolUseWrapper = findToolUseBlock(messages, block.tool_use_id);
                 if (toolUseWrapper) {

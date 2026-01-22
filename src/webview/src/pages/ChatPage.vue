@@ -224,8 +224,11 @@ const messages = computed(() => {
 
 const isBusy = computed(() => session.value?.busy.value ?? false);
 
-const activeSessionId = computed(() => activeSessionRaw.value?.sessionId());
-const activeParentId = computed(() => activeSessionRaw.value?.parentId());
+// 注意：Session 上的 sessionId()/parentId() 是 alien-signals（非 Vue 响应式）。
+// 这里必须通过 useSession 包装后的 Vue refs 读取，否则 parentId 在 listSessions() 后更新时
+// 顶部的左右切换条不会立刻刷新，需要重开页面才会出现。
+const activeSessionId = computed(() => session.value?.sessionId.value);
+const activeParentId = computed(() => session.value?.parentId.value);
 
 const sessionGroupRootId = computed(() => {
   const sid = activeSessionId.value;

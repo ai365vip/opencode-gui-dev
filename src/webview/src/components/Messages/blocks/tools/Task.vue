@@ -8,9 +8,21 @@
       <span class="tool-label">Task</span>
       <span v-if="subagentType" class="agent-badge">{{ subagentType }}</span>
       <span v-if="description" class="description-text">{{ description }}</span>
-      <span v-if="childSessionId" class="session-badge" :title="`Subagent session: ${childSessionId}`"
+      <span
+        v-if="childSessionId"
+        class="session-badge"
+        :title="`Subagent session: ${childSessionId}`"
         >#{{ childSessionId }}</span
       >
+      <button
+        v-if="childSessionId"
+        class="open-session-inline-btn"
+        :disabled="isOpeningSession"
+        @click.stop="openChildSession"
+        title="Open subagent session"
+      >
+        Open
+      </button>
     </template>
 
     <template #expandable>
@@ -99,8 +111,15 @@ function extractChildSessionId(text: string): string | undefined {
 }
 
 const childSessionId = computed(() => {
-  const direct = String(props.toolUseResult?.sessionId ?? props.toolUseResult?.session_id ?? '').trim();
+  const direct = String(
+    props.toolUseResult?.sessionId ?? props.toolUseResult?.session_id ?? ''
+  ).trim();
   if (direct) return direct;
+
+  const fromToolUse = String(
+    props.toolUse?.input?.sessionId ?? props.toolUse?.input?.session_id ?? ''
+  ).trim();
+  if (fromToolUse) return fromToolUse;
 
   const content = props.toolResult?.content;
   if (typeof content === 'string') {
@@ -114,13 +133,16 @@ const resultText = computed(() => {
   const raw = props.toolResult?.content;
   if (raw == null) return '';
 
-  const text = typeof raw === 'string' ? raw : (() => {
-    try {
-      return JSON.stringify(raw, null, 2);
-    } catch {
-      return String(raw);
-    }
-  })();
+  const text =
+    typeof raw === 'string'
+      ? raw
+      : (() => {
+          try {
+            return JSON.stringify(raw, null, 2);
+          } catch {
+            return String(raw);
+          }
+        })();
 
   return text.replace(/\n?<task_metadata>[\s\S]*?<\/task_metadata>\n?/i, '').trim();
 });
@@ -131,11 +153,7 @@ async function openChildSession(): Promise<void> {
 
   isOpeningSession.value = true;
   try {
-    await runtime.sessionStore.listSessions();
-    const target = runtime.sessionStore.sessions().find((s) => s.sessionId() === id);
-    if (target) {
-      runtime.sessionStore.setActiveSession(target);
-    }
+    await runtime.sessionStore.openSessionById(id);
   } catch (e) {
     console.warn('[Task] open session failed:', e);
   } finally {
@@ -277,6 +295,25 @@ const shouldExpand = computed(() => {
 }
 
 .open-session-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.open-session-inline-btn {
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.open-session-inline-btn:hover:enabled {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.open-session-inline-btn:disabled {
   opacity: 0.6;
   cursor: default;
 }
