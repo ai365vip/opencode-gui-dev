@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import * as net from "node:net";
 import { createDecorator } from "../../di/instantiation";
 import { ILogService } from "../logService";
 import { IConfigurationService } from "../configurationService";
@@ -115,38 +116,128 @@ export class OpencodeServerService implements IOpencodeServerService {
 
     const url = new URL(configuredBaseUrl);
     const hostname = url.hostname || "127.0.0.1";
-    const port = Number(url.port || 4096);
+    const bindHost = this.normalizeLocalHostname(hostname);
 
-    this.logService.info(`[OpencodeServerService] Starting opencode server: ${hostname}:${port}`);
+    const parsedPort = Number(url.port || 4096);
+    const requestedPort = Number.isFinite(parsedPort) ? Math.trunc(parsedPort) : 4096;
+    const initialPort =
+      requestedPort <= 0 ? await this.getFreePort(bindHost) : await this.ensurePortAvailable(bindHost, requestedPort);
 
-    const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
     const env: NodeJS.ProcessEnv = { ...process.env };
-
     if (configDir) {
       env.OPENCODE_CONFIG_DIR = configDir;
     }
-
     // 给用户一个最小可追踪的标记，便于区分 extension 启动的进程
     env.OPENCODE_IDE = "vscode";
 
-    const proc = spawn(opencodePath, args, {
-      env,
-      cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
-      windowsHide: true,
-    });
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
-    const listeningUrl = await this.waitForListeningUrl(proc);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const port = attempt === 0 ? initialPort : await this.getFreePort(bindHost);
+      if (attempt > 0) {
+        this.logService.warn(
+          `[OpencodeServerService] Retrying opencode server start on ${hostname}:${port} (previous attempt failed)`
+        );
+      }
 
-    // 启动后再 health-check 一次，避免“拿到 url 但 server 还没 ready”
-    const ok = await this.waitUntilHealthy(listeningUrl, 5000);
-    if (!ok) {
+      this.logService.info(`[OpencodeServerService] Starting opencode server: ${hostname}:${port}`);
+
+      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const proc = spawn(opencodePath, args, { env, cwd, windowsHide: true });
+
       try {
-        proc.kill();
-      } catch {}
-      throw new Error(`OpenCode server did not become healthy: ${listeningUrl}`);
+        const listeningUrl = await this.waitForListeningUrl(proc);
+
+        // 启动后再 health-check 一次，避免“拿到 url 但 server 还没 ready”
+        const ok = await this.waitUntilHealthy(listeningUrl, 5000);
+        if (!ok) {
+          try {
+            proc.kill();
+          } catch {}
+          throw new Error(`OpenCode server did not become healthy: ${listeningUrl}`);
+        }
+
+        if (port !== requestedPort) {
+          vscode.window.showWarningMessage(
+            `OpenCode 端口 ${requestedPort} 已被占用，已改用 ${port}（可在设置 opencodeGui.serverBaseUrl 修改）。`
+          );
+        }
+
+        return { url: listeningUrl, proc };
+      } catch (error) {
+        lastError = error;
+        try {
+          proc.kill();
+        } catch {}
+
+        if (this.isAddressInUseError(error)) {
+          continue;
+        }
+
+        throw error;
+      }
     }
 
-    return { url: listeningUrl, proc };
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`Failed to start OpenCode server (unknown error): ${String(lastError)}`);
+  }
+
+  private normalizeLocalHostname(hostname: string): string {
+    const h = String(hostname ?? "").trim() || "127.0.0.1";
+    // Avoid IPv6 resolution surprises when probing ports.
+    return h === "localhost" ? "127.0.0.1" : h;
+  }
+
+  private isAddressInUseError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return /EADDRINUSE|address already in use|ADDRINUSE/i.test(msg);
+  }
+
+  private async ensurePortAvailable(hostname: string, port: number): Promise<number> {
+    const available = await this.isPortAvailable(hostname, port);
+    if (available) return port;
+
+    const free = await this.getFreePort(hostname);
+    this.logService.warn(
+      `[OpencodeServerService] Port ${port} is already in use on ${hostname}; using ${free} instead`
+    );
+    return free;
+  }
+
+  private isPortAvailable(hostname: string, port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.unref();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => {
+        server.close(() => resolve(true));
+      });
+      try {
+        server.listen({ host: hostname, port, exclusive: true });
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  private getFreePort(hostname: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const server = net.createServer();
+      server.unref();
+      server.once("error", reject);
+      server.listen({ host: hostname, port: 0, exclusive: true }, () => {
+        const address = server.address();
+        server.close(() => {
+          if (typeof address === "object" && address && typeof (address as any).port === "number") {
+            resolve((address as any).port);
+            return;
+          }
+          reject(new Error("Failed to allocate a free port"));
+        });
+      });
+    });
   }
 
   private waitForListeningUrl(proc: ChildProcessWithoutNullStreams): Promise<string> {
