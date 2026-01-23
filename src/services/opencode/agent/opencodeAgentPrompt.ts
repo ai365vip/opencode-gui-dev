@@ -64,7 +64,36 @@ export async function sendPrompt(
       session_id: state.sessionId,
       timestamp: Date.now()
     });
-    await deps.client.command(state.sessionId, body, state.cwd);
+    // /command 在服务端可能会等“整条消息完成”才返回（但内容会先通过 SSE 流出来）。
+    // 这里不要 await，否则会在 30s 客户端超时后把主会话误判成失败。
+    void deps.client
+      .command(state.sessionId, body, state.cwd)
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+
+        // 如果只是 HTTP 响应超时，通常命令已经在服务端执行中（输出会继续走 SSE），不要误报失败。
+        if (/OpenCode API timeout after/i.test(msg)) {
+          deps.logService.warn(
+            `[OpencodeAgentService] /${command} request timed out; continuing to wait for SSE output: ${msg}`
+          );
+          return;
+        }
+
+        deps.logService.warn(`[OpencodeAgentService] /${command} failed: ${msg}`);
+        sendSlashCommandResult(deps, state, {
+          command,
+          args,
+          ok: false,
+          output: msg
+        });
+        state.running = false;
+        deps.sendToChannel(state.channelId, {
+          type: 'result',
+          is_error: true,
+          message: msg,
+          timestamp: Date.now()
+        });
+      });
     return;
   }
 

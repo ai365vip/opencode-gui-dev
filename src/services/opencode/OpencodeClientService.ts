@@ -73,6 +73,7 @@ export class OpencodeClientService implements IOpencodeClientService {
   readonly _serviceBrand: undefined;
 
   private readonly requestTimeoutMs = 30_000;
+  private readonly longRequestTimeoutMs = 5 * 60_000;
 
   constructor(
     @ILogService private readonly logService: ILogService,
@@ -238,7 +239,15 @@ export class OpencodeClientService implements IOpencodeClientService {
   }
 
   async command(sessionId: string, body: any, cwd?: string): Promise<any> {
-    return this.sendJson(`/session/${encodeURIComponent(sessionId)}/command`, body ?? {}, cwd);
+    // /command 可能会阻塞到消息完成才返回（但输出会先通过 SSE 流出来），给更长的超时窗口，
+    // 避免客户端提前 abort 导致服务端误判连接断开。
+    return this.sendJson(
+      `/session/${encodeURIComponent(sessionId)}/command`,
+      body ?? {},
+      cwd,
+      "POST",
+      this.longRequestTimeoutMs
+    );
   }
 
   async shell(sessionId: string, body: any, cwd?: string): Promise<any> {
@@ -418,7 +427,8 @@ export class OpencodeClientService implements IOpencodeClientService {
     pathname: string,
     body: any,
     cwd?: string,
-    method: "POST" | "PATCH" | "PUT" | "DELETE" = "POST"
+    method: "POST" | "PATCH" | "PUT" | "DELETE" = "POST",
+    timeoutMs?: number
   ): Promise<T> {
     const headers = { "Content-Type": "application/json" };
     const init: RequestInit =
@@ -431,7 +441,7 @@ export class OpencodeClientService implements IOpencodeClientService {
 
     try {
       const url = this.buildUrl(pathname, baseUrl, cwd);
-      return await this.fetchJson<T>(url, withDir);
+      return await this.fetchJson<T>(url, withDir, timeoutMs);
     } catch (error) {
       if (this.isLocalBaseUrl(baseUrl) && (this.isConnectionRefusedError(error) || this.isTimeoutError(error))) {
         this.logService.warn(
@@ -442,7 +452,7 @@ export class OpencodeClientService implements IOpencodeClientService {
         } catch {}
         const retryBaseUrl = await this.getBaseUrl();
         const retryUrl = this.buildUrl(pathname, retryBaseUrl, cwd);
-        return await this.fetchJson<T>(retryUrl, withDir);
+        return await this.fetchJson<T>(retryUrl, withDir, timeoutMs);
       }
       throw error;
     }
@@ -474,7 +484,11 @@ export class OpencodeClientService implements IOpencodeClientService {
     return code === "ETIMEDOUT" || code === "TIMEOUT";
   }
 
-  private async fetchJson<T>(url: string, init: RequestInit): Promise<T> {
+  private async fetchJson<T>(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number = this.requestTimeoutMs
+  ): Promise<T> {
     const controller = new AbortController();
     const parentSignal = init.signal;
     let timedOut = false;
@@ -489,12 +503,15 @@ export class OpencodeClientService implements IOpencodeClientService {
       }
     }
 
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      try {
-        controller.abort();
-      } catch {}
-    }, this.requestTimeoutMs);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        try {
+          controller.abort();
+        } catch {}
+      }, timeoutMs);
+    }
 
     let res: Response | undefined;
     let text = "";
@@ -507,10 +524,10 @@ export class OpencodeClientService implements IOpencodeClientService {
           parentSignal?.removeEventListener("abort", abortListener);
         } catch {}
       }
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
 
       if (timedOut) {
-        throw new Error(`OpenCode API timeout after ${this.requestTimeoutMs}ms: ${url}`);
+        throw new Error(`OpenCode API timeout after ${timeoutMs}ms: ${url}`);
       }
 
       throw error instanceof Error ? error : new Error(String(error));
@@ -520,7 +537,7 @@ export class OpencodeClientService implements IOpencodeClientService {
           parentSignal?.removeEventListener("abort", abortListener);
         } catch {}
       }
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
     }
 
     if (!res) {
