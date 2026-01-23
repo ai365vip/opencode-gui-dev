@@ -21,7 +21,7 @@ export async function sendPrompt(
   const text = extractUserText(userMessage);
   const trimmed = (text ?? '').trim();
 
-  // 检查是否是会话级命令（/undo, /redo, /compact, /summarize, /init）
+  // 检查是否是会话级命令（/undo, /redo, /compact, /summarize）
   if (trimmed.startsWith('/') && trimmed.length > 1) {
     const commandLine = trimmed.slice(1).trimStart();
     const firstSpace = commandLine.search(/\s/);
@@ -41,9 +41,6 @@ export async function sendPrompt(
       case 'summarize':
         await handleSessionCompact(deps, state, command as 'compact' | 'summarize');
         return;
-      case 'init':
-        await handleSessionInit(deps, state, args);
-        return;
     }
 
     // 其他命令通过 command API 发送
@@ -52,10 +49,10 @@ export async function sendPrompt(
     ).trim();
     const variant = String(state.variant ?? '').trim();
     const selectedAgent = deps.getEffectiveAgentName(state);
-    const model = parseModel(modelSetting);
 
     const body: any = { command, arguments: args };
-    if (model) body.model = model;
+    // OpenCode 的 /session/:id/command 接口要求 model 是 string（provider/model）
+    if (modelSetting) body.model = modelSetting;
     if (selectedAgent) body.agent = selectedAgent;
     if (variant) body.variant = variant;
 
@@ -373,48 +370,6 @@ async function handleSessionCompact(
       command: commandName,
       ok: false,
       output: `压缩失败: ${msg}`
-    });
-    state.running = false;
-    deps.sendToChannel(state.channelId, {
-      type: 'result',
-      is_error: true,
-      message: msg,
-      timestamp: Date.now()
-    });
-  }
-}
-
-async function handleSessionInit(
-  deps: OpencodeAgentPromptDeps,
-  state: ChannelState,
-  args: string
-): Promise<void> {
-  state.running = true;
-  deps.pushProgressEvent(state.channelId, 'session', 'running');
-  deps.sendToChannel(state.channelId, {
-    type: 'system',
-    subtype: 'init',
-    session_id: state.sessionId,
-    timestamp: Date.now()
-  });
-
-  try {
-    await deps.client.init(state.sessionId, { arguments: args }, state.cwd);
-    sendSlashCommandResult(deps, state, {
-      command: 'init',
-      args,
-      ok: true,
-      output: '已开始初始化，会在完成后输出结果。'
-    });
-    // init 是异步的，输出通过 SSE 返回
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    deps.logService.warn(`[OpencodeAgentService] /init failed: ${msg}`);
-    sendSlashCommandResult(deps, state, {
-      command: 'init',
-      args,
-      ok: false,
-      output: `初始化失败: ${msg}`
     });
     state.running = false;
     deps.sendToChannel(state.channelId, {
