@@ -158,7 +158,7 @@ export class OpencodeServerService implements IOpencodeServerService {
           throw new Error(`OpenCode server did not become healthy: ${listeningUrl}`);
         }
 
-        if (port !== requestedPort) {
+        if (requestedPort > 0 && port !== requestedPort) {
           vscode.window.showWarningMessage(
             `OpenCode 端口 ${requestedPort} 已被占用，已改用 ${port}（可在设置 opencodeGui.serverBaseUrl 修改）。`
           );
