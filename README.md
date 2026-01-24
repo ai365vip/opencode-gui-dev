@@ -40,6 +40,7 @@ OpenCode install instructions: https://opencode.ai/docs
   - `Ctrl+L` / `Cmd+L`: send current selection (plus file reference)
   - Explorer context menu: “添加到 OpenCode”
 - Optional: run “OpenCode: 一键 Revert 最近改动” to revert the latest change.
+- If the backend gets stuck or memory usage grows too large, run “OpenCode: Restart / Reconnect Server” (or “OpenCode: Stop Local Server”).
 
 ## Configuration
 
@@ -52,6 +53,7 @@ OpenCode install instructions: https://opencode.ai/docs
 - `opencodeGui.selectedAgent`: default agent name
 - `opencodeGui.configDir`: pass `OPENCODE_CONFIG_DIR` when starting the server (useful for oh-my-opencode profiles)
 - `opencodeGui.runningWatchdogMs`: abort a running session if no SSE events are received for this long (ms). Set to `0` to disable.
+- `opencodeGui.serverIdleShutdownMs`: stop the local server (only if auto-started by this extension) after all channels are closed and idle for this long (ms). Set to `0` to disable.
 
 ### OpenCode config files
 

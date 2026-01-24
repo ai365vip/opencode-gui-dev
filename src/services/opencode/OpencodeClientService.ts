@@ -16,6 +16,8 @@ export interface IOpencodeClientService {
 
   getBaseUrl(): Promise<string>;
   globalHealth(cwd?: string): Promise<{ healthy: boolean; version: string }>;
+  disposeInstance(cwd: string): Promise<boolean>;
+  disposeAllInstances(): Promise<boolean>;
 
   listCommands(cwd?: string): Promise<any>;
 
@@ -86,6 +88,27 @@ export class OpencodeClientService implements IOpencodeClientService {
 
   async globalHealth(cwd?: string): Promise<{ healthy: boolean; version: string }> {
     return this.getJson("/global/health", cwd);
+  }
+
+  async disposeInstance(cwd: string): Promise<boolean> {
+    try {
+      const res = await this.sendJson("/instance/dispose", {}, cwd, "POST", 5000);
+      return Boolean(res);
+    } catch (error) {
+      this.logService.warn(`[OpencodeClientService] instance.dispose failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  async disposeAllInstances(): Promise<boolean> {
+    try {
+      // Avoid passing directory headers/params - this is truly global.
+      const res = await this.sendJson("/global/dispose", {}, undefined, "POST", 5000);
+      return Boolean(res);
+    } catch (error) {
+      this.logService.warn(`[OpencodeClientService] global.dispose failed: ${String(error)}`);
+      return false;
+    }
   }
 
   async listCommands(cwd?: string): Promise<any> {

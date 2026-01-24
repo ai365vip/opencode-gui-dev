@@ -46,6 +46,7 @@ OpenCode 安装文档：https://opencode.ai/docs
   - `Ctrl+L` / `Cmd+L`：发送当前选区（附带文件引用）
   - 资源管理器右键： “添加到 OpenCode”
 - 可选：执行命令 “OpenCode: 一键 Revert 最近改动”。
+- 如果后端卡死或内存占用异常增长，可执行命令 “OpenCode: Restart / Reconnect Server”（或 “OpenCode: Stop Local Server”）。
 
 ## 配置说明
 
@@ -58,6 +59,7 @@ OpenCode 安装文档：https://opencode.ai/docs
 - `opencodeGui.selectedAgent`：默认 agent 名称
 - `opencodeGui.configDir`：启动 server 时传入 `OPENCODE_CONFIG_DIR`（适合 oh-my-opencode profile/隔离）
 - `opencodeGui.runningWatchdogMs`：会话运行中若连续这么久（毫秒）未收到 SSE 事件则自动中断（防止卡死）；设为 `0` 可关闭。
+- `opencodeGui.serverIdleShutdownMs`：当所有会话标签页都关闭后，空闲这么久（毫秒）自动停止本地 server；设为 `0` 可关闭。
 
 ### OpenCode 配置文件
 

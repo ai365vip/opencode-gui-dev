@@ -4,8 +4,19 @@
 
 import * as vscode from 'vscode';
 import { InstantiationServiceBuilder } from './di/instantiationServiceBuilder';
-import { registerServices, ILogService, IOpencodeAgentService, IWebViewService, IInlineDiffService } from './services/serviceRegistry';
+import type { IInstantiationService } from './di/instantiation';
+import {
+	registerServices,
+	ILogService,
+	IOpencodeAgentService,
+	IOpencodeClientService,
+	IOpencodeServerService,
+	IWebViewService,
+	IInlineDiffService
+} from './services/serviceRegistry';
 import { VSCodeTransport } from './services/transport/VSCodeTransport';
+
+let globalInstantiationService: IInstantiationService | undefined;
 
 /**
  * Extension Activation
@@ -26,6 +37,20 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// 3. Seal the builder and create DI container
 	const instantiationService = builder.seal();
+	globalInstantiationService = instantiationService;
+	context.subscriptions.push({
+		dispose: () => {
+			try {
+				instantiationService.dispose();
+			} catch {
+				// ignore
+			} finally {
+				if (globalInstantiationService === instantiationService) {
+					globalInstantiationService = undefined;
+				}
+			}
+		}
+	});
 
 	// 4. Log activation
 	instantiationService.invokeFunction(accessor => {
@@ -303,13 +328,67 @@ export function activate(context: vscode.ExtensionContext) {
 		});
 	});
 
+	const restartServer = vscode.commands.registerCommand('opencodeGui.restartServer', async () => {
+		await instantiationService.invokeFunction(async accessor => {
+			const logService = accessor.get(ILogService);
+			const serverService = accessor.get(IOpencodeServerService);
+			const client = accessor.get(IOpencodeClientService);
+
+			const wasManaged = serverService.isManaged();
+			if (wasManaged) {
+				try {
+					await client.disposeAllInstances();
+				} catch (error) {
+					logService.warn(`[Extension] global.dispose failed (ignored): ${String(error)}`);
+				}
+			}
+
+			serverService.dispose();
+			const url = await serverService.ensureServer();
+			const nowManaged = serverService.isManaged();
+			vscode.window.showInformationMessage(
+				nowManaged
+					? `OpenCode server 已重启: ${url}`
+					: wasManaged
+						? `OpenCode server 已重连: ${url}`
+						: `OpenCode server 已重连: ${url}（当前 server 非本扩展拉起，未执行全局释放）`
+			);
+		});
+	});
+
+	const stopServer = vscode.commands.registerCommand('opencodeGui.stopServer', async () => {
+		await instantiationService.invokeFunction(async accessor => {
+			const logService = accessor.get(ILogService);
+			const serverService = accessor.get(IOpencodeServerService);
+			const client = accessor.get(IOpencodeClientService);
+
+			const wasManaged = serverService.isManaged();
+			if (wasManaged) {
+				try {
+					await client.disposeAllInstances();
+				} catch (error) {
+					logService.warn(`[Extension] global.dispose failed (ignored): ${String(error)}`);
+				}
+			}
+
+			serverService.dispose();
+			vscode.window.showInformationMessage(
+				wasManaged
+					? 'OpenCode server 已停止（仅对本扩展拉起的本地进程有效）'
+					: '当前 server 非本扩展拉起，未自动停止（请自行停止后端进程）'
+			);
+		});
+	});
+
 	context.subscriptions.push(
 		showChatCommand,
 		addSelectionToChat,
 		addFileToChat,
 		selectFileForChat,
 		revertLastChange,
-		openOhMyConfig
+		openOhMyConfig,
+		restartServer,
+		stopServer
 	);
 
 	// 注册完成
@@ -324,5 +403,11 @@ export function activate(context: vscode.ExtensionContext) {
  * Extension Deactivation
  */
 export function deactivate() {
-	// Clean up resources
+	try {
+		globalInstantiationService?.dispose();
+	} catch {
+		// ignore
+	} finally {
+		globalInstantiationService = undefined;
+	}
 }

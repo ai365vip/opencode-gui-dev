@@ -86,4 +86,6 @@ export type ChannelState = {
   lastUsageSignature?: string;
 
   lastRevert?: { messageID: string; partID?: string };
+
+  watchdogLastNoticeTs?: number;
 };

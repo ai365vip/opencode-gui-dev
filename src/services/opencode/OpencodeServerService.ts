@@ -11,6 +11,7 @@ export interface IOpencodeServerService {
   readonly _serviceBrand: undefined;
   ensureServer(): Promise<string>;
   getBaseUrl(): string | undefined;
+  isManaged(): boolean;
   dispose(): void;
 }
 
@@ -35,6 +36,10 @@ export class OpencodeServerService implements IOpencodeServerService {
     return this.baseUrl;
   }
 
+  isManaged(): boolean {
+    return Boolean(this.proc);
+  }
+
   async ensureServer(): Promise<string> {
     if (this.baseUrl) {
       return this.baseUrl;
@@ -52,8 +57,25 @@ export class OpencodeServerService implements IOpencodeServerService {
   }
 
   dispose(): void {
+    const proc = this.proc;
+    const pid = proc?.pid;
+
     try {
-      this.proc?.kill();
+      if (proc) {
+        // Best-effort: on Windows, kill the full process tree (opencode may spawn MCP servers).
+        if (pid && process.platform === "win32") {
+          try {
+            spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+          } catch (error) {
+            this.logService.warn(
+              `[OpencodeServerService] taskkill failed; falling back to proc.kill(): ${String(error)}`
+            );
+            proc.kill();
+          }
+        } else {
+          proc.kill();
+        }
+      }
     } catch (error) {
       this.logService.warn(`[OpencodeServerService] Failed to kill server process: ${String(error)}`);
     } finally {
@@ -145,6 +167,7 @@ export class OpencodeServerService implements IOpencodeServerService {
 
       const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
       const proc = spawn(opencodePath, args, { env, cwd, windowsHide: true });
+      this.logService.info(`[OpencodeServerService] Spawned opencode pid=${proc.pid ?? "unknown"}`);
 
       try {
         const listeningUrl = await this.waitForListeningUrl(proc);

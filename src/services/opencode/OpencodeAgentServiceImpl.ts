@@ -5,6 +5,7 @@ import { IWorkspaceService } from '../workspaceService';
 import { IWebViewService } from '../webViewService';
 import { ITransport } from '../transport';
 import { IOpencodeClientService } from './OpencodeClientService';
+import { IOpencodeServerService } from './OpencodeServerService';
 import type { IOpencodeAgentService } from './OpencodeAgentService';
 import {
   handleEvent as handleSseEvent,
@@ -49,6 +50,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   private lastActiveChannelId?: string;
 
   private readonly channels = new Map<string, ChannelState>();
+  private idleServerShutdownTimer?: ReturnType<typeof setTimeout>;
   private readonly defaultRunningWatchdogMs = 600_000;
   private readonly runningWatchdog: RunningWatchdog;
   private readonly requestWaiters = new Map<
@@ -66,12 +68,26 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     @IConfigurationService private readonly configService: IConfigurationService,
     @IWorkspaceService private readonly workspaceService: IWorkspaceService,
     @IWebViewService private readonly webViewService: IWebViewService,
-    @IOpencodeClientService private readonly client: IOpencodeClientService
+    @IOpencodeClientService private readonly client: IOpencodeClientService,
+    @IOpencodeServerService private readonly serverService: IOpencodeServerService
   ) {
     this.runningWatchdog = new RunningWatchdog(
       () => this.getRunningWatchdogMs(),
       (state) => this.onRunningWatchdogFired(state)
     );
+  }
+
+  dispose(): void {
+    this.clearIdleServerShutdownTimer();
+    for (const state of this.channels.values()) {
+      try {
+        state.sseAbort.abort();
+      } catch {}
+    }
+    this.channels.clear();
+    this.progressEventsByChannel.clear();
+    this.requestWaiters.clear();
+    this.modelContextWindowById.clear();
   }
 
   setTransport(transport: ITransport): void {
@@ -158,6 +174,8 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     permissionMode: unknown,
     initialMessage: any | undefined
   ): Promise<void> {
+    this.clearIdleServerShutdownTimer();
+
     const workspaceCwd =
       this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath ?? process.cwd();
     let resolvedCwd = cwd ?? workspaceCwd;
@@ -277,6 +295,7 @@ export class OpencodeAgentService implements IOpencodeAgentService {
     this.progressEventsByChannel.delete(channelId);
 
     this.transport?.send({ type: 'close_channel', channelId });
+    this.scheduleIdleServerShutdownIfNeeded();
   }
 
   private async sendPrompt(state: ChannelState, userMessage: any): Promise<void> {
@@ -392,7 +411,37 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
     const timeoutMs = this.getRunningWatchdogMs();
     const timeoutSec = Math.max(1, Math.round(timeoutMs / 1000));
-    const msg = `长时间无输出（>${timeoutSec}s），已自动中断。可在设置 opencodeGui.runningWatchdogMs 调整/关闭。`;
+
+    const subagentRunning = await this.isSubagentRunning(state);
+    if (subagentRunning) {
+      this.logService.warn(
+        `[OpencodeAgentService] No SSE events for ${timeoutSec}s but subagent is still running; keep waiting (${state.sessionId})`
+      );
+
+      const now = Date.now();
+      if (!state.watchdogLastNoticeTs || now - state.watchdogLastNoticeTs > 60_000) {
+        state.watchdogLastNoticeTs = now;
+        this.sendToChannel(state.channelId, {
+          type: 'assistant',
+          timestamp: now,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: `超过 ${timeoutSec}s 未收到后端事件，但检测到子代理仍在运行，继续等待输出（已尝试重连 SSE）。可在设置 opencodeGui.runningWatchdogMs 调整/关闭。`
+              }
+            ]
+          }
+        });
+      }
+
+      this.pokeSse(state);
+      this.runningWatchdog.arm(state);
+      return;
+    }
+
+    const msg = `超过 ${timeoutSec}s 未收到后端事件，且未检测到子代理运行，已自动中断。可在设置 opencodeGui.runningWatchdogMs 调整/关闭。`;
     this.logService.warn(`[OpencodeAgentService] ${msg} (${state.sessionId})`);
 
     try {
@@ -417,6 +466,49 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       message: msg,
       timestamp: Date.now()
     });
+  }
+
+  private async isSubagentRunning(state: ChannelState): Promise<boolean> {
+    try {
+      const [statusRes, childrenRes] = await Promise.allSettled([
+        this.client.getSessionStatus(state.cwd),
+        this.client.listSessionChildren(state.sessionId, state.cwd)
+      ]);
+
+      const statusMap =
+        statusRes.status === 'fulfilled' && statusRes.value && typeof statusRes.value === 'object'
+          ? (statusRes.value as Record<string, any>)
+          : undefined;
+
+      const children = childrenRes.status === 'fulfilled' ? childrenRes.value : undefined;
+      if (!statusMap || !Array.isArray(children)) return false;
+
+      for (const child of children) {
+        const id = String((child as any)?.id ?? (child as any)?.sessionID ?? (child as any)?.sessionId ?? '').trim();
+        if (!id) continue;
+        const st = statusMap[id];
+        const t = String((st as any)?.type ?? '').trim().toLowerCase();
+        if (t === 'busy' || t === 'retry') {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private pokeSse(state: ChannelState): void {
+    // The SSE loop may be stuck awaiting data if the server stopped sending heartbeats.
+    // Swap the AbortController and abort the old one to force reconnect, without cancelling the session.
+    const prev = state.sseAbort;
+    state.sseAbort = new AbortController();
+    try {
+      prev.abort();
+    } catch {
+      // ignore
+    }
   }
 
   private getSseDeps(): SseDeps {
@@ -521,6 +613,52 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       state?.modelSetting ?? (this.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
     ).trim();
     return modelSetting || undefined;
+  }
+
+  private clearIdleServerShutdownTimer(): void {
+    if (!this.idleServerShutdownTimer) return;
+    clearTimeout(this.idleServerShutdownTimer);
+    this.idleServerShutdownTimer = undefined;
+  }
+
+  private getServerIdleShutdownMs(): number {
+    const raw = this.configService.getValue<number>('opencodeGui.serverIdleShutdownMs', 0) ?? 0;
+    const ms = typeof raw === 'number' && Number.isFinite(raw) ? Math.trunc(raw) : 0;
+    return Math.max(0, ms);
+  }
+
+  private scheduleIdleServerShutdownIfNeeded(): void {
+    this.clearIdleServerShutdownTimer();
+
+    const ms = this.getServerIdleShutdownMs();
+    if (ms <= 0) return;
+    if (this.channels.size > 0) return;
+    if (!this.serverService.isManaged()) return;
+
+    this.idleServerShutdownTimer = setTimeout(() => {
+      void this.stopServerForIdle(ms);
+    }, ms);
+  }
+
+  private async stopServerForIdle(idleMs: number): Promise<void> {
+    if (this.channels.size > 0) return;
+    if (!this.serverService.isManaged()) return;
+
+    this.logService.info(`[OpencodeAgentService] No active channels; stopping server after idle ${idleMs}ms`);
+
+    try {
+      await this.client.disposeAllInstances();
+    } catch (error) {
+      this.logService.warn(`[OpencodeAgentService] global.dispose failed (ignored): ${String(error)}`);
+    }
+
+    if (this.channels.size > 0) return;
+
+    try {
+      this.serverService.dispose();
+    } catch (error) {
+      this.logService.warn(`[OpencodeAgentService] server dispose failed (ignored): ${String(error)}`);
+    }
   }
 
   private getRunningWatchdogMs(): number {

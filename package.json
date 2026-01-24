@@ -2,7 +2,7 @@
   "name": "opencode-gui-vscode",
   "displayName": "OpenCode GUI",
   "description": "在 VSCode 中使用 OpenCode 的图形界面（WebView），自动拉起本地 opencode server。",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "Ai365vip",
   "repository": {
     "type": "git",
@@ -54,6 +54,11 @@
           "type": "number",
           "default": 600000,
           "description": "Abort a running session if no SSE events are received for this long (ms). Set to 0 to disable."
+        },
+        "opencodeGui.serverIdleShutdownMs": {
+          "type": "number",
+          "default": 0,
+          "description": "Stop the local OpenCode server after all channels are closed and idle for this long (ms). Only affects servers auto-started by this extension. Set to 0 to disable."
         }
       }
     },
@@ -80,6 +85,16 @@
       {
         "command": "opencodeGui.showChat",
         "title": "Show OpenCode GUI"
+      },
+      {
+        "command": "opencodeGui.restartServer",
+        "title": "OpenCode: Restart / Reconnect Server",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "opencodeGui.stopServer",
+        "title": "OpenCode: Stop Local Server",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "opencodeGui.addSelectionToChat",
