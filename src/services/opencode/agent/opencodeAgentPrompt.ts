@@ -99,9 +99,30 @@ export async function sendPrompt(
   }
 
   // 正常消息处理
-  const parts = buildPromptPartsFromBlocks(blocks);
+  const { parts, ignoredAttachments } = buildPromptPartsFromBlocks(blocks);
+
+  if (ignoredAttachments.length > 0) {
+    const lines = ignoredAttachments.map((a) => `- ${a.name} (${a.mime})：${a.reason}`);
+    deps.sendToChannel(state.channelId, {
+      type: 'assistant',
+      timestamp: Date.now(),
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text:
+              `提示：检测到当前模型可能不支持的附件类型，已自动跳过这些附件，避免会话卡死。\n` +
+              `你可以把 Excel 导出为 CSV / 复制为文本再发送，或改用图片/PDF。\n` +
+              lines.join('\n')
+          }
+        ]
+      }
+    });
+  }
+
   if (parts.length === 0) {
-    parts.push({ type: 'text', text });
+    parts.push({ type: 'text', text: text ?? '' });
   }
 
   const modelSetting = (
@@ -156,8 +177,11 @@ function extractTextFromBlocks(blocks: any[]): string {
     .join('\n');
 }
 
-function buildPromptPartsFromBlocks(blocks: any[]): any[] {
+type IgnoredAttachment = { name: string; mime: string; reason: string };
+
+function buildPromptPartsFromBlocks(blocks: any[]): { parts: any[]; ignoredAttachments: IgnoredAttachment[] } {
   const parts: any[] = [];
+  const ignoredAttachments: IgnoredAttachment[] = [];
 
   for (const block of blocks) {
     if (!block || typeof block !== 'object') continue;
@@ -190,29 +214,155 @@ function buildPromptPartsFromBlocks(blocks: any[]): any[] {
       const title = typeof block.title === 'string' ? block.title.trim() : '';
       const name = title || `attachment-${Date.now()}`;
 
-      if (source.type === 'base64') {
-        const data = typeof source.data === 'string' ? source.data : '';
-        if (!data) continue;
-        parts.push({ type: 'file', url: `data:${mime};base64,${data}`, mime, filename: name });
+      // OpenAI-compatible providers only support a narrow set of "file" media types (typically images/PDF).
+      // For other files, prefer sending their content as plain text (when reasonable) or skip with a warning.
+      if (isSupportedFilePartMime(mime)) {
+        if (source.type === 'base64') {
+          const data = typeof source.data === 'string' ? source.data : '';
+          if (!data) continue;
+          parts.push({ type: 'file', url: `data:${mime};base64,${data}`, mime, filename: name });
+          continue;
+        }
+
+        if (source.type === 'text') {
+          const textData = typeof source.data === 'string' ? source.data : '';
+          if (!textData) continue;
+          const base64 = Buffer.from(textData, 'utf8').toString('base64');
+          parts.push({ type: 'file', url: `data:${mime};base64,${base64}`, mime, filename: name });
+          continue;
+        }
+
+        ignoredAttachments.push({ name, mime, reason: '附件数据格式不支持' });
         continue;
       }
 
+      // Text-like files: include as plain text instead of "file" parts to maximize compatibility.
       if (source.type === 'text') {
         const textData = typeof source.data === 'string' ? source.data : '';
         if (!textData) continue;
-        const base64 = Buffer.from(textData, 'utf8').toString('base64');
-        parts.push({ type: 'file', url: `data:${mime};base64,${base64}`, mime, filename: name });
+        parts.push({ type: 'text', text: formatTextAttachment(name, mime, textData) });
         continue;
       }
+
+      if (source.type === 'base64') {
+        const data = typeof source.data === 'string' ? source.data : '';
+        if (!data) continue;
+
+        if (isLikelyTextAttachment(mime, name)) {
+          const decoded = decodeBase64ToUtf8(data, 512 * 1024);
+          if (!decoded.text) {
+            ignoredAttachments.push({ name, mime, reason: '无法按 UTF-8 解码为文本' });
+            continue;
+          }
+          parts.push({
+            type: 'text',
+            text: formatTextAttachment(name, mime, decoded.text, decoded.truncated)
+          });
+          continue;
+        }
+
+        ignoredAttachments.push({
+          name,
+          mime,
+          reason: '当前仅支持图片/PDF 作为附件；该类型建议转为 CSV/文本或截图'
+        });
+        continue;
+      }
+
+      ignoredAttachments.push({ name, mime, reason: '附件数据格式不支持' });
     }
   }
 
-  return parts;
+  return { parts, ignoredAttachments };
 }
 
 function normalizeMimeType(value: unknown): string {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw || 'application/octet-stream';
+}
+
+function isSupportedFilePartMime(mime: string): boolean {
+  const m = normalizeMimeType(mime);
+  return m === 'application/pdf' || m.startsWith('image/');
+}
+
+function isLikelyTextAttachment(mime: string, filename: string): boolean {
+  const m = normalizeMimeType(mime);
+  if (m.startsWith('text/')) return true;
+  if (
+    m === 'application/json' ||
+    m === 'application/xml' ||
+    m === 'application/xhtml+xml' ||
+    m === 'application/javascript' ||
+    m === 'application/typescript' ||
+    m === 'application/x-javascript' ||
+    m === 'application/x-typescript' ||
+    m === 'application/x-yaml' ||
+    m === 'application/yaml' ||
+    m === 'application/toml' ||
+    m === 'application/sql' ||
+    m === 'application/graphql' ||
+    m === 'application/ndjson'
+  ) {
+    return true;
+  }
+
+  const lower = String(filename ?? '').toLowerCase();
+  return (
+    lower.endsWith('.txt') ||
+    lower.endsWith('.md') ||
+    lower.endsWith('.markdown') ||
+    lower.endsWith('.json') ||
+    lower.endsWith('.yaml') ||
+    lower.endsWith('.yml') ||
+    lower.endsWith('.toml') ||
+    lower.endsWith('.csv') ||
+    lower.endsWith('.ts') ||
+    lower.endsWith('.tsx') ||
+    lower.endsWith('.js') ||
+    lower.endsWith('.jsx') ||
+    lower.endsWith('.mjs') ||
+    lower.endsWith('.cjs') ||
+    lower.endsWith('.py') ||
+    lower.endsWith('.go') ||
+    lower.endsWith('.rs') ||
+    lower.endsWith('.java') ||
+    lower.endsWith('.kt') ||
+    lower.endsWith('.cs') ||
+    lower.endsWith('.cpp') ||
+    lower.endsWith('.c') ||
+    lower.endsWith('.h') ||
+    lower.endsWith('.hpp') ||
+    lower.endsWith('.sh') ||
+    lower.endsWith('.bat') ||
+    lower.endsWith('.ps1') ||
+    lower.endsWith('.html') ||
+    lower.endsWith('.css') ||
+    lower.endsWith('.scss') ||
+    lower.endsWith('.less') ||
+    lower.endsWith('.xml') ||
+    lower.endsWith('.ini') ||
+    lower.endsWith('.conf') ||
+    lower.endsWith('.log')
+  );
+}
+
+function decodeBase64ToUtf8(base64: string, maxBytes: number): { text: string; truncated: boolean } {
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(base64, 'base64');
+  } catch {
+    return { text: '', truncated: false };
+  }
+
+  const truncated = maxBytes > 0 && buf.length > maxBytes;
+  const slice = truncated ? buf.subarray(0, maxBytes) : buf;
+  return { text: slice.toString('utf8'), truncated };
+}
+
+function formatTextAttachment(name: string, mime: string, text: string, truncated?: boolean): string {
+  const header = `附件：${name} (${mime})${truncated ? '（已截断）' : ''}`;
+  return `${header}\n\n\`\`\`\n${text}\n\`\`\``;
 }
 
 export function extractUserText(userMessage: any): string {

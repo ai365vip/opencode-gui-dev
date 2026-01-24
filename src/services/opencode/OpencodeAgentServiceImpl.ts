@@ -308,6 +308,10 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       const msg = error instanceof Error ? error.message : String(error);
       this.logService.error(`[OpencodeAgentService] sendPrompt failed: ${msg}`);
 
+      if (await this.tryRecoverUnsupportedFilePartError(state, msg)) {
+        return;
+      }
+
       const uiMsg = (() => {
         const timeout = msg.match(/OpenCode API timeout after (\d+)ms:/i);
         if (timeout?.[1]) {
@@ -337,6 +341,104 @@ export class OpencodeAgentService implements IOpencodeAgentService {
         timestamp: Date.now()
       });
     }
+  }
+
+  private async tryRecoverUnsupportedFilePartError(state: ChannelState, message: string): Promise<boolean> {
+    const parsed = parseUnsupportedFilePartError(message);
+    if (!parsed) return false;
+
+    const now = Date.now();
+    if (state.lastUnsupportedFileCleanupTs && now - state.lastUnsupportedFileCleanupTs < 15_000) {
+      return false;
+    }
+    state.lastUnsupportedFileCleanupTs = now;
+
+    let removed = 0;
+    try {
+      removed = await this.removeFilePartsByMime(state, parsed.mime);
+    } catch (error) {
+      this.logService.warn(
+        `[OpencodeAgentService] Failed to cleanup unsupported file parts (${parsed.mime}): ${String(error)}`
+      );
+    }
+
+    state.running = false;
+    this.runningWatchdog.disarm(state);
+    flushPendingAssistantOutput(this.getSseDeps(), state);
+
+    if (removed > 0) {
+      state.assistantMessageIds.clear();
+      state.textParts.clear();
+      state.reasoningParts.clear();
+      state.sentToolUseIds.clear();
+      this.sendToChannel(state.channelId, {
+        type: 'system',
+        subtype: 'refresh',
+        session_id: state.sessionId,
+        timestamp: Date.now()
+      });
+    }
+
+    this.sendToChannel(state.channelId, {
+      type: 'assistant',
+      timestamp: Date.now(),
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text:
+              `当前模型/后端不支持该附件类型：${parsed.mime}。\n` +
+              (removed > 0
+                ? `已从会话中移除该附件（${removed} 个 part），现在可以继续对话。\n`
+                : `你需要撤销/移除该附件后才能继续对话。\n`) +
+              `建议：把 Excel 导出为 CSV 或复制为文本再发送，或改用图片/PDF。`
+          }
+        ]
+      }
+    });
+
+    this.sendToChannel(state.channelId, {
+      type: 'result',
+      is_error: true,
+      message,
+      timestamp: Date.now()
+    });
+
+    return true;
+  }
+
+  private async removeFilePartsByMime(state: ChannelState, mime: string): Promise<number> {
+    const messages = await this.client.listMessages(state.sessionId, state.cwd);
+    const items: any[] = Array.isArray(messages) ? messages : (messages?.messages ?? messages?.data ?? []);
+
+    const targetMime = normalizeMimeType(mime);
+    let removed = 0;
+
+    for (const item of items) {
+      const info = item?.info ?? item?.message ?? item;
+      const messageId = String(info?.id ?? '').trim();
+      if (!messageId) continue;
+
+      const parts: any[] = Array.isArray(item?.parts) ? item.parts : [];
+      for (const part of parts) {
+        if (!part || typeof part !== 'object') continue;
+        if (String(part.type ?? '').trim() !== 'file') continue;
+
+        const partMime = normalizeMimeType((part as any).mime ?? (part as any).mediaType);
+        if (partMime !== targetMime) continue;
+
+        const partId = String((part as any).id ?? '').trim();
+        if (!partId) continue;
+
+        const ok = await this.client
+          .deleteMessagePart(state.sessionId, messageId, partId, state.cwd)
+          .catch(() => false);
+        if (ok) removed += 1;
+      }
+    }
+
+    return removed;
   }
 
   private async startSseLoop(state: ChannelState): Promise<void> {
@@ -674,4 +776,19 @@ export class OpencodeAgentService implements IOpencodeAgentService {
   private sendToChannel(channelId: string, event: any): void {
     this.transport?.send({ type: 'io_message', channelId, message: event, done: false });
   }
+}
+
+function parseUnsupportedFilePartError(message: string): { mime: string } | undefined {
+  const msg = String(message ?? '');
+  const m = msg.match(
+    /AI_UnsupportedFunctionalityError:\s*'file part media type ([^']+)'\s+functionality not supported/i
+  );
+  if (!m?.[1]) return undefined;
+  const mime = normalizeMimeType(m[1]);
+  return mime ? { mime } : undefined;
+}
+
+function normalizeMimeType(value: unknown): string {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw || 'application/octet-stream';
 }

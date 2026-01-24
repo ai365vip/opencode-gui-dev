@@ -88,4 +88,6 @@ export type ChannelState = {
   lastRevert?: { messageID: string; partID?: string };
 
   watchdogLastNoticeTs?: number;
+
+  lastUnsupportedFileCleanupTs?: number;
 };

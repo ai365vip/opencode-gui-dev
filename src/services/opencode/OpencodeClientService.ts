@@ -49,6 +49,7 @@ export interface IOpencodeClientService {
   getSessionTodo(sessionId: string, cwd?: string): Promise<any>;
   getSessionDiff(sessionId: string, messageId?: string, cwd?: string): Promise<any>;
   listMessages(sessionId: string, cwd?: string): Promise<any>;
+  deleteMessagePart(sessionId: string, messageId: string, partId: string, cwd?: string): Promise<boolean>;
 
   prompt(sessionId: string, body: any, cwd?: string): Promise<any>;
   command(sessionId: string, body: any, cwd?: string): Promise<any>;
@@ -253,6 +254,24 @@ export class OpencodeClientService implements IOpencodeClientService {
 
   async listMessages(sessionId: string, cwd?: string): Promise<any> {
     return this.getJson(`/session/${encodeURIComponent(sessionId)}/message`, cwd);
+  }
+
+  async deleteMessagePart(
+    sessionId: string,
+    messageId: string,
+    partId: string,
+    cwd?: string
+  ): Promise<boolean> {
+    const baseUrl = await this.getBaseUrl();
+    const url = this.buildUrl(
+      `/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageId)}/part/${encodeURIComponent(
+        partId
+      )}`,
+      baseUrl,
+      cwd
+    );
+    const res = await this.fetchJson<any>(url, this.withDirectoryHeader({ method: "DELETE" }, cwd));
+    return Boolean(res);
   }
 
   async prompt(sessionId: string, body: any, cwd?: string): Promise<any> {
