@@ -99,6 +99,7 @@ export type SseDeps = {
   transportSend: (msg: any) => void;
   pushProgressEvent: (channelId: string, type: string, summary: string) => void;
   sendToChannel: (channelId: string, event: any) => void;
+  tryRecoverUnsupportedFilePartError?: (state: ChannelState, message: string) => Promise<boolean>;
   getEffectiveModelSetting: (state?: ChannelState) => string | undefined;
   buildUsageFromTokens: (tokens: unknown, opts?: { contextWindow?: number }) => any | undefined;
   buildToolUseInput: (part: OpenCodeToolPart) => Record<string, unknown>;
@@ -141,7 +142,7 @@ export async function handleEvent(
       onSessionStatus(deps, state, evt);
       return;
     case 'session.error':
-      onSessionError(deps, state, evt);
+      await onSessionError(deps, state, evt);
       return;
     default:
       return;
@@ -461,12 +462,18 @@ function onSessionStatus(deps: SseDeps, state: ChannelState, evt: OpencodeEvent)
   deps.sendToChannel(state.channelId, { type: 'result', timestamp: Date.now() });
 }
 
-function onSessionError(deps: SseDeps, state: ChannelState, evt: OpencodeEvent): void {
+async function onSessionError(deps: SseDeps, state: ChannelState, evt: OpencodeEvent): Promise<void> {
   const sessionID = (evt.properties as any)?.sessionID as string | undefined;
   if (sessionID && sessionID !== state.sessionId) return;
 
   const err = (evt.properties as any)?.error;
   const msg = err?.data?.message ?? err?.data?.providerID ?? 'OpenCode session error';
+  const msgText = String(msg);
+
+  if (deps.tryRecoverUnsupportedFilePartError) {
+    const recovered = await deps.tryRecoverUnsupportedFilePartError(state, msgText).catch(() => false);
+    if (recovered) return;
+  }
 
   const wasRunning = state.running;
   if (wasRunning) {
@@ -481,7 +488,7 @@ function onSessionError(deps: SseDeps, state: ChannelState, evt: OpencodeEvent):
     message: {
       id: (err as any)?.messageID ?? undefined,
       role: 'assistant',
-      content: [{ type: 'text', text: String(msg) }]
+      content: [{ type: 'text', text: msgText }]
     }
   });
 
@@ -489,7 +496,7 @@ function onSessionError(deps: SseDeps, state: ChannelState, evt: OpencodeEvent):
     deps.sendToChannel(state.channelId, {
       type: 'result',
       is_error: true,
-      message: String(msg),
+      message: msgText,
       timestamp: Date.now()
     });
   }

@@ -40,6 +40,30 @@ export const IMAGE_MEDIA_TYPES = [
   'image/webp',
 ] as const;
 
+export const SUPPORTED_UPLOAD_MEDIA_TYPES = [
+  ...IMAGE_MEDIA_TYPES,
+  'application/pdf',
+] as const;
+
+export function isSupportedUploadFile(file: File): boolean {
+  const type = String(file?.type ?? '').trim().toLowerCase();
+  if (type) {
+    if (type.startsWith('image/')) return true;
+    if (type === 'application/pdf') return true;
+  }
+
+  const name = String(file?.name ?? '').trim().toLowerCase();
+  if (!name) return false;
+  if (name.endsWith('.pdf')) return true;
+  return (
+    name.endsWith('.png') ||
+    name.endsWith('.jpg') ||
+    name.endsWith('.jpeg') ||
+    name.endsWith('.gif') ||
+    name.endsWith('.webp')
+  );
+}
+
 /**
  * 文件大小格式化
  */

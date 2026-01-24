@@ -620,6 +620,9 @@ export class OpencodeAgentService implements IOpencodeAgentService {
       transportSend: (msg) => this.transport?.send(msg),
       pushProgressEvent: (channelId, type, summary) => this.pushProgressEvent(channelId, type, summary),
       sendToChannel: (channelId, event) => this.sendToChannel(channelId, event),
+      tryRecoverUnsupportedFilePartError: async (state, message) => {
+        return await this.tryRecoverUnsupportedFilePartError(state, message);
+      },
       getEffectiveModelSetting: (state) => this.getEffectiveModelSetting(state),
       buildUsageFromTokens,
       buildToolUseInput: buildToolUseInputImpl,
@@ -780,12 +783,23 @@ export class OpencodeAgentService implements IOpencodeAgentService {
 
 function parseUnsupportedFilePartError(message: string): { mime: string } | undefined {
   const msg = String(message ?? '');
-  const m = msg.match(
-    /AI_UnsupportedFunctionalityError:\s*'file part media type ([^']+)'\s+functionality not supported/i
+  const variantA = msg.match(
+    /(?:AI_)?UnsupportedFunctionalityError:\s*'file part media type ([^']+)'\s+functionality not supported/i
   );
-  if (!m?.[1]) return undefined;
-  const mime = normalizeMimeType(m[1]);
-  return mime ? { mime } : undefined;
+  if (variantA?.[1]) {
+    const mime = normalizeMimeType(variantA[1]);
+    return mime ? { mime } : undefined;
+  }
+
+  const variantB = msg.match(
+    /(?:AI_)?UnsupportedFunctionalityError:\s*'media type:\s*([^']+)'\s+functionality not supported/i
+  );
+  if (variantB?.[1]) {
+    const mime = normalizeMimeType(variantB[1]);
+    return mime ? { mime } : undefined;
+  }
+
+  return undefined;
 }
 
 function normalizeMimeType(value: unknown): string {

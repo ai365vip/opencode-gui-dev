@@ -159,7 +159,7 @@ import type { Session } from '../core/Session';
 import type { PermissionRequest } from '../core/PermissionRequest';
 import type { ToolContext } from '../types/tool';
 import type { AttachmentItem } from '../types/attachment';
-import { convertFileToAttachment } from '../types/attachment';
+import { convertFileToAttachment, isSupportedUploadFile } from '../types/attachment';
 import ChatInputBox from '../components/ChatInputBox.vue';
 import Spinner from '../components/Messages/WaitingIndicator.vue';
 import RandomTip from '../components/RandomTip.vue';
@@ -632,8 +632,26 @@ async function handleAddAttachment(files: FileList) {
   if (!files || files.length === 0) return;
 
   try {
-    // 将所有文件转换为 AttachmentItem
-    const conversions = await Promise.all(Array.from(files).map(convertFileToAttachment));
+    const allFiles = Array.from(files);
+    const supportedFiles = allFiles.filter(isSupportedUploadFile);
+    const rejected = allFiles.filter((f) => !isSupportedUploadFile(f));
+
+    if (rejected.length > 0) {
+      const names = rejected.map((f) => f.name).filter(Boolean);
+      const preview = names.slice(0, 5).join(', ');
+      const suffix = names.length > 5 ? ` 等 ${names.length} 个文件` : '';
+      void runtime.appContext.showNotification(
+        `当前仅支持上传图片/PDF，已忽略：${preview}${suffix}`,
+        'warning'
+      );
+    }
+
+    if (supportedFiles.length === 0) {
+      return;
+    }
+
+    // 将文件转换为 AttachmentItem
+    const conversions = await Promise.all(supportedFiles.map(convertFileToAttachment));
 
     // 添加到附件列表
     attachments.value = [...attachments.value, ...conversions];

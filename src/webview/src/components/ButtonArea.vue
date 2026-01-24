@@ -133,12 +133,18 @@
         </DropdownTrigger>
 
         <!-- Attach File Button -->
-        <button class="action-button" @click="handleAttachClick" aria-label="Attach File">
+        <button
+          class="action-button"
+          @click="handleAttachClick"
+          aria-label="Attach Image/PDF"
+          title="Attach image/PDF"
+        >
           <span class="codicon codicon-attach text-[16px]!" />
           <input
             ref="fileInputRef"
             type="file"
             multiple
+            accept="image/*,application/pdf"
             style="display: none"
             @change="handleFileUpload"
           />
