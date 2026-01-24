@@ -18,7 +18,8 @@ export async function sendPrompt(
   state: ChannelState,
   userMessage: any
 ): Promise<void> {
-  const text = extractUserText(userMessage);
+  const blocks = extractUserContentBlocks(userMessage);
+  const text = blocks.length > 0 ? extractTextFromBlocks(blocks) : extractUserText(userMessage);
   const trimmed = (text ?? '').trim();
 
   // 检查是否是会话级命令（/undo, /redo, /compact, /summarize）
@@ -98,7 +99,10 @@ export async function sendPrompt(
   }
 
   // 正常消息处理
-  const parts = [{ type: 'text', text }];
+  const parts = buildPromptPartsFromBlocks(blocks);
+  if (parts.length === 0) {
+    parts.push({ type: 'text', text });
+  }
 
   const modelSetting = (
     state.modelSetting ?? (deps.configService.getValue<string>('opencodeGui.selectedModel', '') ?? '')
@@ -127,6 +131,88 @@ export async function sendPrompt(
   state.running = true;
   deps.pushProgressEvent(state.channelId, 'session', 'running');
   await deps.client.prompt(state.sessionId, body, state.cwd);
+}
+
+function extractUserContentBlocks(userMessage: any): any[] {
+  const content = userMessage?.message?.content ?? userMessage?.content ?? userMessage;
+
+  if (Array.isArray(content)) return content;
+
+  if (typeof content === 'string') {
+    const text = String(content);
+    return text ? [{ type: 'text', text }] : [];
+  }
+
+  return [];
+}
+
+function extractTextFromBlocks(blocks: any[]): string {
+  return blocks
+    .map((b) => {
+      if (!b || typeof b !== 'object') return '';
+      if (b.type === 'text' && typeof b.text === 'string') return b.text;
+      return '';
+    })
+    .join('\n');
+}
+
+function buildPromptPartsFromBlocks(blocks: any[]): any[] {
+  const parts: any[] = [];
+
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+
+    if (block.type === 'text' && typeof block.text === 'string') {
+      parts.push({ type: 'text', text: block.text });
+      continue;
+    }
+
+    if (block.type === 'image') {
+      const source = block.source;
+      if (!source || typeof source !== 'object' || source.type !== 'base64') continue;
+      const mime = normalizeMimeType(source.media_type ?? source.mediaType);
+      const data = typeof source.data === 'string' ? source.data : '';
+      if (!data) continue;
+
+      parts.push({
+        type: 'file',
+        url: `data:${mime};base64,${data}`,
+        mime,
+        filename: `pasted-image-${Date.now()}`
+      });
+      continue;
+    }
+
+    if (block.type === 'document') {
+      const source = block.source;
+      if (!source || typeof source !== 'object') continue;
+      const mime = normalizeMimeType(source.media_type ?? source.mediaType);
+      const title = typeof block.title === 'string' ? block.title.trim() : '';
+      const name = title || `attachment-${Date.now()}`;
+
+      if (source.type === 'base64') {
+        const data = typeof source.data === 'string' ? source.data : '';
+        if (!data) continue;
+        parts.push({ type: 'file', url: `data:${mime};base64,${data}`, mime, filename: name });
+        continue;
+      }
+
+      if (source.type === 'text') {
+        const textData = typeof source.data === 'string' ? source.data : '';
+        if (!textData) continue;
+        const base64 = Buffer.from(textData, 'utf8').toString('base64');
+        parts.push({ type: 'file', url: `data:${mime};base64,${base64}`, mime, filename: name });
+        continue;
+      }
+    }
+  }
+
+  return parts;
+}
+
+function normalizeMimeType(value: unknown): string {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw || 'application/octet-stream';
 }
 
 export function extractUserText(userMessage: any): string {
