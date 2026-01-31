@@ -2,7 +2,7 @@
   "name": "opencode-gui-vscode",
   "displayName": "OpenCode GUI",
   "description": "在 VSCode 中使用 OpenCode 的图形界面（WebView），自动拉起本地 opencode server。",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "Ai365vip",
   "repository": {
     "type": "git",

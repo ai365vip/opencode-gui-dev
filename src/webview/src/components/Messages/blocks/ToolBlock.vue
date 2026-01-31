@@ -33,6 +33,7 @@ import TaskTool from './tools/Task.vue';
 import TodoWriteTool from './tools/TodoWrite.vue';
 import WebFetchTool from './tools/WebFetch.vue';
 import WebSearchTool from './tools/WebSearch.vue';
+import ApplyPatchTool from './tools/ApplyPatch.vue';
 import DefaultTool from './tools/Default.vue';
 
 interface Props {
@@ -73,6 +74,9 @@ function normalizeToolName(name: string): string {
     slashcommand: 'SlashCommand',
     'slash_command': 'SlashCommand',
     'slash-command': 'SlashCommand',
+    applypatch: 'ApplyPatch',
+    'apply_patch': 'ApplyPatch',
+    'apply-patch': 'ApplyPatch',
   };
 
   if (known[key]) return known[key];
@@ -142,6 +146,8 @@ const toolComponent = computed(() => {
       return WebFetchTool;
     case 'WebSearch':
       return WebSearchTool;
+    case 'ApplyPatch':
+      return ApplyPatchTool;
     default:
       return DefaultTool;
   }
