@@ -52,7 +52,13 @@ OpenCode 安装文档：https://opencode.ai/docs
 
 ### VS Code 设置项
 
-- `opencodeGui.opencodePath`：`opencode` 可执行文件路径
+- `opencodeGui.opencodePath`：`opencode` 可执行文件路径  
+  在 Windows 上建议配置为 `opencode.cmd` 或 `opencode.ps1`：
+  ```json
+  {
+    "opencodeGui.opencodePath": "D:\\Program Files\\nodejs\\opencode.cmd"
+  }
+  ```
 - `opencodeGui.serverBaseUrl`：默认 `http://127.0.0.1:4096`  
   如果配置为非本地地址，扩展只连接，不会自动拉起 server。
 - `opencodeGui.selectedModel`：默认模型（`provider/model`）

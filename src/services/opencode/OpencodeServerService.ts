@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as net from "node:net";
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import { createDecorator } from "../../di/instantiation";
 import { ILogService } from "../logService";
 import { IConfigurationService } from "../configurationService";
@@ -165,7 +167,7 @@ export class OpencodeServerService implements IOpencodeServerService {
   }
 
   private async startLocalServer(configuredBaseUrl: string): Promise<StartResult> {
-    const opencodePath = this.configService.getValue<string>("opencodeGui.opencodePath", "opencode") ?? "opencode";
+    let opencodePath = this.configService.getValue<string>("opencodeGui.opencodePath", "opencode") ?? "opencode";
     const configDir = (this.configService.getValue<string>("opencodeGui.configDir", "") ?? "").trim();
 
     const url = new URL(configuredBaseUrl);
@@ -186,6 +188,45 @@ export class OpencodeServerService implements IOpencodeServerService {
 
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
+    // 在 Windows 上处理不同类型的可执行文件
+    let spawnCommand = opencodePath;
+    let spawnArgs: string[] = [];
+
+    if (process.platform === 'win32') {
+      const lowerPath = opencodePath.toLowerCase();
+      
+      // 如果是 .cmd 或 .bat 文件，使用 cmd.exe 来执行
+      if (lowerPath.endsWith('.cmd') || lowerPath.endsWith('.bat')) {
+        this.logService.info(`[OpencodeServerService] Detected batch file: ${opencodePath}`);
+        spawnCommand = "cmd.exe";
+        spawnArgs = ["/c", opencodePath];
+      }
+      // 如果是 .ps1 文件，使用 powershell.exe 来执行
+      else if (lowerPath.endsWith('.ps1')) {
+        this.logService.info(`[OpencodeServerService] Detected PowerShell script: ${opencodePath}`);
+        spawnCommand = "powershell.exe";
+        spawnArgs = ["-ExecutionPolicy", "Bypass", "-File", opencodePath];
+      }
+      // 对于其他情况，确保有正确的 .exe 扩展名
+      else {
+        if (!path.isAbsolute(opencodePath) && !opencodePath.endsWith('.exe')) {
+          opencodePath = `${opencodePath}.exe`;
+        } else if (path.isAbsolute(opencodePath) && !lowerPath.endsWith('.exe')) {
+          try {
+            await fs.access(opencodePath).catch(() => {
+              const withExe = `${opencodePath}.exe`;
+              return fs.access(withExe).then(() => {
+                opencodePath = withExe;
+              });
+            });
+          } catch {
+            // 保持原路径
+          }
+        }
+        spawnCommand = opencodePath;
+      }
+    }
+
     let lastError: unknown;
     for (let attempt = 0; attempt < 5; attempt++) {
       const port = attempt === 0 ? initialPort : await this.getFreePort(bindHost);
@@ -196,15 +237,44 @@ export class OpencodeServerService implements IOpencodeServerService {
       }
 
       this.logService.info(`[OpencodeServerService] Starting opencode server: ${hostname}:${port}`);
+      this.logService.info(`[OpencodeServerService] Using executable: ${spawnCommand}`);
+      
+      // 添加 serve 命令和参数
+      const serveArgs = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      if (spawnArgs.length > 0) {
+        spawnArgs = spawnArgs.concat(serveArgs);
+        this.logService.info(`[OpencodeServerService] With arguments: ${spawnArgs.join(' ')}`);
+      } else {
+        spawnArgs = serveArgs;
+        this.logService.info(`[OpencodeServerService] With arguments: ${spawnArgs.join(' ')}`);
+      }
+      this.logService.info(`[OpencodeServerService] Working directory: ${cwd}`);
 
-      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
-      const proc = spawn(opencodePath, args, { env, cwd, windowsHide: true });
-      this.logService.info(`[OpencodeServerService] Spawned opencode pid=${proc.pid ?? "unknown"}`);
+      let proc: ChildProcessWithoutNullStreams;
+      try {
+        proc = spawn(spawnCommand, spawnArgs, { env, cwd, windowsHide: true });
+      } catch (spawnError) {
+        this.logService.error(`[OpencodeServerService] Failed to spawn process: ${String(spawnError)}`);
+        this.logService.error(`[OpencodeServerService] Executable: ${spawnCommand}`);
+        this.logService.error(`[OpencodeServerService] Arguments: ${spawnArgs.join(' ')}`);
+        this.logService.error(`[OpencodeServerService] Working directory: ${cwd}`);
+        
+        if (process.platform === 'win32') {
+          this.logService.error(`[OpencodeServerService] Windows diagnostics:`);
+          this.logService.error(`[OpencodeServerService]   - Is path absolute? ${path.isAbsolute(spawnCommand)}`);
+          this.logService.error(`[OpencodeServerService]   - File extension: ${path.extname(spawnCommand)}`);
+          this.logService.error(`[OpencodeServerService]   - Process platform: ${process.platform}`);
+        }
+        
+        throw new Error(`Failed to start OpenCode server: ${String(spawnError)}. Please verify the opencode path is correct.`);
+      }
+      
+      this.logService.info(`[OpencodeServerService] Spawned process pid=${proc.pid ?? "unknown"}`);
 
       try {
         const listeningUrl = await this.waitForListeningUrl(proc);
 
-        // 启动后再 health-check 一次，避免“拿到 url 但 server 还没 ready”
+        // 启动后再 health-check 一次，避免"拿到 url 但 server 还没 ready"
         const ok = await this.waitUntilHealthy(listeningUrl, 5000);
         if (!ok) {
           try {

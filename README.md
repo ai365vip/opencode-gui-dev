@@ -46,7 +46,13 @@ OpenCode install instructions: https://opencode.ai/docs
 
 ### VS Code settings
 
-- `opencodeGui.opencodePath`: path to the `opencode` executable
+- `opencodeGui.opencodePath`: path to the `opencode` executable  
+  On Windows, configure it as `opencode.cmd` or `opencode.ps1`:
+  ```json
+  {
+    "opencodeGui.opencodePath": "D:\\Program Files\\nodejs\\opencode.cmd"
+  }
+  ```
 - `opencodeGui.serverBaseUrl`: default `http://127.0.0.1:4096`  
   If you set a non-local base URL, the extension will only connect (it won’t auto-start a server).
 - `opencodeGui.selectedModel`: default model (`provider/model`)
